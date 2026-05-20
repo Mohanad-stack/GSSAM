@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GSSAM Web Tool</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header>
+    <h1>GSSAM Web Tool</h1>
+    <p>Convert any switching converter into a closed-loop averaging model (A, B, C, D).</p>
+  </header>
+
+  <main>
+    <section id="topology-section">
+      <h2>1. Select topology</h2>
+      <div id="topology-picker"><!-- filled by JS --></div>
+    </section>
+
+    <section id="params-section" hidden>
+      <h2>2. Parameters</h2>
+      <p class="hint">Leave Kp / Ki blank to auto-tune.</p>
+      <div id="param-form"><!-- filled by JS --></div>
+      <button id="compute-btn">Compute ABCD</button>
+    </section>
+
+    <section id="results-section" hidden>
+      <h2>3. Results</h2>
+      <div id="results"><!-- filled by JS --></div>
+    </section>
+  </main>
+
+  <footer>
+    <p>
+      Source on <a href="https://github.com/" id="repo-link">GitHub</a>.
+      v0 prototype.
+    </p>
+  </footer>
+
+  <script type="module" src="main.js"></script>
+</body>
+</html>
