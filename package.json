@@ -1,0 +1,24 @@
+{
+  "name": "gssam-web",
+  "version": "1.0.0",
+  "description": "Browser tool that turns switching DC-DC converters into a closed-loop GSSAM model (ABCD), with nonlinear simulation, stability/bifurcation analysis, and component design.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "python -m http.server 8000",
+    "test": "node tests/buck.test.js && node tests/boost.test.js && node tests/buckboost.test.js",
+    "lint": "echo 'Lint not configured' && exit 0"
+  },
+  "keywords": [
+    "GSSAM",
+    "state-space-averaging",
+    "DC-DC",
+    "buck",
+    "boost",
+    "buck-boost",
+    "power-electronics",
+    "bifurcation",
+    "stability"
+  ],
+  "license": "MIT"
+}
