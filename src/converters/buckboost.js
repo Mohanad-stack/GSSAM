@@ -44,25 +44,31 @@ export const buckboost = {
     };
   },
 
+  // Closed-loop linearization (matches BuckBoost_closedV2.m). Control feedback
+  // enters DC inductor row (1, gain ∝ (Vin+Vr)) and DC capacitor row (2, via q0).
+  //   gV = (Vin+Vr)/(L*Vm),  hV = Vr/(C*R*Vm*q0)
   buildAB(p, op) {
-    const { L, C, R, fs, Kp1, Ki1 } = p;
+    const { L, C, R, fs, Vm = 1, Vin, Vref, Kp1, Ki1, Kp2, Ki2 } = p;
     const w = 2 * Math.PI * fs;
     const { a_ss, b_ss, q0, sd, cd, d_ss } = op;
+    const Vr = Vref;
+    const gV = (Vin + Vr) / (L * Vm);
+    const hV = Vr / (C * R * Vm * q0);
 
     const A = [
-      [ 0,        -q0 / L,      0,            0,            2 * a_ss / L, 2 * b_ss / L, 0,   0 ],
-      [ q0 / C,   -1 / (R * C), -2 * a_ss / C, -2 * b_ss / C, 0,         0,           0,   0 ],
-      [ 0,         a_ss / L,    0,            w,           -q0 / L,       0,           0,   0 ],
-      [ 0,         b_ss / L,   -w,            0,            0,           -q0 / L,      0,   0 ],
-      [ -a_ss / C, 0,           q0 / C,       0,           -1 / (R * C),  w,           0,   0 ],
-      [ -b_ss / C, 0,           0,            q0 / C,      -w,           -1 / (R * C), 0,   0 ],
-      [ 0,        -1,           0,            0,            0,            0,           0,   0 ],
-      [ -1,       -Kp1,         0,            0,            0,            0,           Ki1, 0 ],
+      [ -Kp2 * gV,        -Kp1 * Kp2 * gV - q0 / L,      0,            0,            2 * a_ss / L, 2 * b_ss / L, Ki1 * Kp2 * gV,  Ki2 * gV ],
+      [ Kp2 * hV + q0 / C, Kp1 * Kp2 * hV - 1 / (R * C), -2 * a_ss / C, -2 * b_ss / C, 0,          0,           -Ki1 * Kp2 * hV, -Ki2 * hV ],
+      [ 0,                 a_ss / L,                      0,            w,           -q0 / L,       0,            0,               0 ],
+      [ 0,                 b_ss / L,                     -w,            0,            0,           -q0 / L,       0,               0 ],
+      [ -a_ss / C,         0,                             q0 / C,       0,           -1 / (R * C),  w,            0,               0 ],
+      [ -b_ss / C,         0,                             0,            q0 / C,      -w,           -1 / (R * C),  0,               0 ],
+      [ 0,                -1,                             0,            0,            0,            0,            0,               0 ],
+      [ -1,               -Kp1,                           0,            0,            0,            0,            Ki1,             0 ],
     ];
 
     const B = [
-      [ q0 / L ],
-      [ 0 ],
+      [ (Kp1 * Kp2 * Vr + Vm * q0 * d_ss) / (L * Vm * d_ss) ],
+      [ -Kp1 * Kp2 * hV ],
       [ q0 * sd / (2 * Math.PI * L * d_ss) ],
       [ q0 * (cd - 1) / (2 * Math.PI * L * d_ss) ],
       [ 0 ],

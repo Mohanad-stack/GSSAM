@@ -62,23 +62,24 @@ q0   = 1 - d_ss;
 %% ------------------------------------------
 % A, B, C, D matrices (Linearized, frozen-d, dX = A*X + B*Vr)
 %% ------------------------------------------
-A = [  0,          -q0/L,         0,         0,         2*a_ss/L,   2*b_ss/L,   0,    0;
-       q0/C,       -1/(R*C),     -2*a_ss/C, -2*b_ss/C,  0,          0,          0,    0;
-       0,           a_ss/L,       0,         w,        -q0/L,       0,          0,    0;
-       0,           b_ss/L,      -w,         0,         0,         -q0/L,       0,    0;
-      -a_ss/C,      0,            q0/C,      0,        -1/(R*C),    w,          0,    0;
-      -b_ss/C,      0,            0,         q0/C,     -w,         -1/(R*C),    0,    0;
-       0,          -1,            0,         0,         0,          0,          0,    0;
-      -1,          -Kp1,          0,         0,         0,          0,          Ki1,  0  ];
+A = [ -Kp2*(Vin+Vr)/(L*Vm),         -Kp1*Kp2*(Vin+Vr)/(L*Vm) - q0/L,  0,         0,         2*a_ss/L,   2*b_ss/L,   Ki1*Kp2*(Vin+Vr)/(L*Vm),     Ki2*(Vin+Vr)/(L*Vm);
+       Kp2*Vr/(C*R*Vm*q0) + q0/C,    Kp1*Kp2*Vr/(C*R*Vm*q0) - 1/(R*C), -2*a_ss/C, -2*b_ss/C,  0,          0,         -Ki1*Kp2*Vr/(C*R*Vm*q0),      -Ki2*Vr/(C*R*Vm*q0);
+       0,                            a_ss/L,                            0,         w,        -q0/L,       0,          0,                            0;
+       0,                            b_ss/L,                           -w,         0,         0,         -q0/L,       0,                            0;
+      -a_ss/C,                       0,                                 q0/C,      0,        -1/(R*C),    w,          0,                            0;
+      -b_ss/C,                       0,                                 0,         q0/C,     -w,         -1/(R*C),    0,                            0;
+       0,                           -1,                                 0,         0,         0,          0,          0,                            0;
+      -1,                           -Kp1,                               0,         0,         0,          0,          Ki1,                          0  ];
 
-B = [ q0/L;
-      0;
+B = [ (Kp1*Kp2*Vr + Vm*q0*d_ss)/(L*Vm*d_ss);
+     -Kp1*Kp2*Vr/(C*R*Vm*q0);
       q0*sd / (2*pi*L*d_ss);
       q0*(cd - 1) / (2*pi*L*d_ss);
       0;
       0;
       1;
       Kp1 ];
+
 
 C = eye(8);
 D = zeros(8,1);

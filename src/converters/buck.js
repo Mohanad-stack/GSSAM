@@ -42,24 +42,29 @@ export const buck = {
 
   // --- 3. A and B matrices (linearized, frozen-d) -----------------------
   // dX = A*X + B*Vr,  X = [iL0, vo0, iLR, iLI, voR, voI, ev_int, ei_int]
+  // Closed-loop linearization: the controller feedback enters the DC inductor
+  // row (row 1) directly through d = vcon/Vm; the harmonic rows (3,4) carry
+  // only the plant terms. Matches Buck_closed_V4.m exactly.
+  //   g = Vin/(L*Vm)
   buildAB(p, op) {
-    const { L, C, R, fs, Kp1, Ki1 } = p;
+    const { Vin, L, C, R, fs, Vm = 1, Kp1, Ki1, Kp2, Ki2 } = p;
     const w = 2 * Math.PI * fs;
     const { d_ss, sd, cd } = op;
+    const g = Vin / (L * Vm);
 
     const A = [
-      [ 0,     -1 / L,      0,      0,      0,          0,          0,    0 ],
-      [ 1 / C, -1 / (R * C), 0,     0,      0,          0,          0,    0 ],
-      [ 0,      0,           0,     w,     -1 / L,      0,          0,    0 ],
-      [ 0,      0,          -w,     0,      0,         -1 / L,      0,    0 ],
-      [ 0,      0,           1 / C, 0,     -1 / (R * C), w,         0,    0 ],
-      [ 0,      0,           0,     1 / C, -w,         -1 / (R * C), 0,   0 ],
-      [ 0,     -1,           0,     0,      0,          0,          0,    0 ],
-      [ -1,    -Kp1,         0,     0,      0,          0,          Ki1,  0 ],
+      [ -Kp2 * g, -Kp1 * Kp2 * g - 1 / L, 0,     0,      0,            0,           Ki1 * Kp2 * g, Ki2 * g ],
+      [ 1 / C,    -1 / (R * C),           0,     0,      0,            0,           0,             0 ],
+      [ 0,         0,                     0,     w,     -1 / L,        0,           0,             0 ],
+      [ 0,         0,                    -w,     0,      0,           -1 / L,       0,             0 ],
+      [ 0,         0,                     1 / C, 0,     -1 / (R * C),  w,           0,             0 ],
+      [ 0,         0,                     0,     1 / C, -w,           -1 / (R * C), 0,             0 ],
+      [ 0,        -1,                     0,     0,      0,            0,           0,             0 ],
+      [ -1,       -Kp1,                   0,     0,      0,            0,           Ki1,           0 ],
     ];
 
     const B = [
-      [ 1 / L ],
+      [ Kp1 * Kp2 * g ],
       [ 0 ],
       [ sd / (2 * Math.PI * L * d_ss) ],
       [ (cd - 1) / (2 * Math.PI * L * d_ss) ],

@@ -49,10 +49,14 @@ export function renderComparison(container, topology, parameters, modelMode = 'l
 
   const modelNote = document.createElement('p');
   modelNote.className = 'hint';
-  modelNote.textContent = 'GSSAM here is the linearized model (same A, B as the matrices above). ' +
-    'Its startup transient overshoots and will not match the switching converter — the linear ' +
-    'model is only valid near the operating point. Steady-state ripple, however, matches closely. ' +
-    'A nonlinear GSSAM that tracks the full startup is planned.';
+  modelNote.textContent = modelMode === 'nonlinear'
+    ? 'GSSAM here is the nonlinear (duty state-dependent) model. It recomputes the duty live ' +
+      'from the states each step, so it tracks the full startup transient and matches the switching ' +
+      'converter from t = 0, not just in steady state.'
+    : 'GSSAM here is the linearized closed-loop model (same A, B as the matrices above). ' +
+      'With the controller coupled into the model it settles to the reference like the real loop; ' +
+      'the small startup differences vs the switching converter are the linearization error away ' +
+      'from the operating point. For an exact startup match, use the Nonlinear tab.';
   container.appendChild(modelNote);
 
   const plotsWrap = document.createElement('div');

@@ -37,15 +37,31 @@ b = (cos(2π·d) − 1) / (2π)
 
 These (with d) define `<s>₀ = d`, `<s>R = a`, `<s>I = b`.
 
+## Linearized closed-loop A, B (frozen-d)
+
+The linearized matrices are the **closed-loop** linearization at the operating
+point: the controller feedback is included in A (it enters the DC inductor row, and
+for Boost/Buck-Boost the DC capacitor row as well, through `d = vcon/Vm`). The
+harmonic rows (3-6) carry only the plant terms. The reference enters through B. This
+is the form in the updated `examples/*.m` scripts and is what the Linearized and
+Nonlinear tabs use for simulation. Because the loop is closed, the linearized
+response settles to the reference like the real system (no artificial open-loop
+overshoot).
+
+Each converter's `buildAB` matches its `.m` script entry-for-entry (verified in
+`tests/`). Common operating-point quantities:
+
 ## Buck closed-loop A, B (linearized at d_ss)
 
 ```
 d_ss = Vref / Vin
 a_ss = sin(2π·d_ss)/(2π)
 b_ss = (cos(2π·d_ss) − 1)/(2π)
+g    = Vin/(L·Vm)
 ```
 
-See `examples/Buck_closed_V4.m` for the symbolic form. Direct translation lives in `src/converters/buck.js`.
+Row 1 (iL0) carries the control terms `[-Kp2·g, -Kp1·Kp2·g - 1/L, 0,0,0,0, Ki1·Kp2·g, Ki2·g]`.
+See `examples/Buck_closed_V4.m`; the translation lives in `src/converters/buck.js`.
 
 ## Boost closed-loop A, B
 

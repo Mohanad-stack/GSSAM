@@ -39,11 +39,12 @@ K1  = Kp1;
 Tt1 = Kp1/Ki1;
 
 % PI2 controller (Current loop - inner)
-Kp2 = 0.0748;   Ki2 = 117.5;K2  = Kp2;
+Kp2 = 0.0748;   Ki2 = 117.5;
+K2  = Kp2;
 Tt2 = Kp2/Ki2;
 
 % Reference
-Vr = 18;
+Vr = 21;
 
 %% ------------------------------------------
 % Operating-point quantities for the LINEARIZED model
@@ -60,17 +61,17 @@ q0   = 1 - d_ss;
 %% ------------------------------------------
 % A, B, C, D matrices (Linearized, frozen-d, dX = A*X + B*Vr)
 %% ------------------------------------------
-A = [  0,          -q0/L,         0,         0,         2*a_ss/L,   2*b_ss/L,   0,    0;
-       q0/C,       -1/(R*C),     -2*a_ss/C, -2*b_ss/C,  0,          0,          0,    0;
-       0,           a_ss/L,       0,         w,        -q0/L,       0,          0,    0;
-       0,           b_ss/L,      -w,         0,         0,         -q0/L,       0,    0;
-      -a_ss/C,      0,            q0/C,      0,        -1/(R*C),    w,          0,    0;
-      -b_ss/C,      0,            0,         q0/C,     -w,         -1/(R*C),    0,    0;
-       0,          -1,            0,         0,         0,          0,          0,    0;
-      -1,          -Kp1,          0,         0,         0,          0,          Ki1,  0  ];
+A = [ -Kp2*Vr/(L*Vm),               -Kp1*Kp2*Vr/(L*Vm) - q0/L,        0,         0,         2*a_ss/L,   2*b_ss/L,   Ki1*Kp2*Vr/(L*Vm),            Ki2*Vr/(L*Vm);
+       Kp2*Vr/(C*R*Vm*q0) + q0/C,    Kp1*Kp2*Vr/(C*R*Vm*q0) - 1/(R*C), -2*a_ss/C, -2*b_ss/C,  0,          0,         -Ki1*Kp2*Vr/(C*R*Vm*q0),      -Ki2*Vr/(C*R*Vm*q0);
+       0,                            a_ss/L,                            0,         w,        -q0/L,       0,          0,                            0;
+       0,                            b_ss/L,                           -w,         0,         0,         -q0/L,       0,                            0;
+      -a_ss/C,                       0,                                 q0/C,      0,        -1/(R*C),    w,          0,                            0;
+      -b_ss/C,                       0,                                 0,         q0/C,     -w,         -1/(R*C),    0,                            0;
+       0,                           -1,                                 0,         0,         0,          0,          0,                            0;
+      -1,                           -Kp1,                               0,         0,         0,          0,          Ki1,                          0  ];
 
-B = [ q0/L;
-      0;
+B = [ (Kp1*Kp2*Vr + Vm*q0)/(L*Vm);
+     -Kp1*Kp2*Vr/(C*R*Vm*q0);
       0;
       0;
       0;

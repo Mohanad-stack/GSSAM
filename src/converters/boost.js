@@ -39,24 +39,33 @@ export const boost = {
     };
   },
 
+  // Closed-loop linearization (matches Boost_closed_V3.m). Control feedback
+  // enters the DC inductor row (1) and the DC capacitor row (2, via the q0
+  // coupling); harmonic rows carry only plant terms.
+  //   gV = Vr/(L*Vm),  hV = Vr/(C*R*Vm*q0)
   buildAB(p, op) {
-    const { L, C, R, fs, Kp1, Ki1 } = p;
+    const { L, C, R, fs, Vm = 1, Vref, Kp1, Ki1, Kp2, Ki2 } = p;
     const w = 2 * Math.PI * fs;
     const { a_ss, b_ss, q0 } = op;
+    const Vr = Vref;
+    const gV = Vr / (L * Vm);
+    const hV = Vr / (C * R * Vm * q0);
 
     const A = [
-      [ 0,        -q0 / L,      0,            0,            2 * a_ss / L, 2 * b_ss / L, 0,   0 ],
-      [ q0 / C,   -1 / (R * C), -2 * a_ss / C, -2 * b_ss / C, 0,         0,           0,   0 ],
-      [ 0,         a_ss / L,    0,            w,           -q0 / L,       0,           0,   0 ],
-      [ 0,         b_ss / L,   -w,            0,            0,           -q0 / L,      0,   0 ],
-      [ -a_ss / C, 0,           q0 / C,       0,           -1 / (R * C),  w,           0,   0 ],
-      [ -b_ss / C, 0,           0,            q0 / C,      -w,           -1 / (R * C), 0,   0 ],
-      [ 0,        -1,           0,            0,            0,            0,           0,   0 ],
-      [ -1,       -Kp1,         0,            0,            0,            0,           Ki1, 0 ],
+      [ -Kp2 * gV,        -Kp1 * Kp2 * gV - q0 / L,      0,            0,            2 * a_ss / L, 2 * b_ss / L, Ki1 * Kp2 * gV,  Ki2 * gV ],
+      [ Kp2 * hV + q0 / C, Kp1 * Kp2 * hV - 1 / (R * C), -2 * a_ss / C, -2 * b_ss / C, 0,          0,           -Ki1 * Kp2 * hV, -Ki2 * hV ],
+      [ 0,                 a_ss / L,                      0,            w,           -q0 / L,       0,            0,               0 ],
+      [ 0,                 b_ss / L,                     -w,            0,            0,           -q0 / L,       0,               0 ],
+      [ -a_ss / C,         0,                             q0 / C,       0,           -1 / (R * C),  w,            0,               0 ],
+      [ -b_ss / C,         0,                             0,            q0 / C,      -w,           -1 / (R * C),  0,               0 ],
+      [ 0,                -1,                             0,            0,            0,            0,            0,               0 ],
+      [ -1,               -Kp1,                           0,            0,            0,            0,            Ki1,             0 ],
     ];
 
     const B = [
-      [ q0 / L ], [ 0 ], [ 0 ], [ 0 ], [ 0 ], [ 0 ], [ 1 ], [ Kp1 ],
+      [ (Kp1 * Kp2 * Vr + Vm * q0) / (L * Vm) ],
+      [ -Kp1 * Kp2 * hV ],
+      [ 0 ], [ 0 ], [ 0 ], [ 0 ], [ 1 ], [ Kp1 ],
     ];
 
     return { A, B };

@@ -20,5 +20,8 @@
     "bifurcation",
     "stability"
   ],
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "jsdom": "^29.1.1"
+  }
 }
