@@ -30,6 +30,41 @@ const SWEEPABLE = [
   { id: 'R', label: 'R (load)' },
 ];
 
+/**
+ * Auto-range defaults per parameter. Given the parameter's nominal value,
+ * returns sensible min/max for the sweep. Gains can span very wide ranges
+ * (the bifurcation is often 100× nominal or nominal/100), while power-stage
+ * components stay within ~0.3-3× nominal of practical designs.
+ */
+function defaultRange(paramId, nominal) {
+  if (!Number.isFinite(nominal) || nominal === 0) {
+    return { Kp1: [0.001, 1], Ki1: [10, 50000], Kp2: [0.001, 1], Ki2: [10, 5000],
+             L: [10e-6, 5e-3], C: [10e-6, 1e-3], R: [1, 100] }[paramId] || [0.1, 100];
+  }
+  switch (paramId) {
+    case 'Kp1':
+    case 'Kp2': return [nominal * 0.05, nominal * 2];
+    case 'Ki1':
+    case 'Ki2': return [nominal * 0.5, nominal * 200];
+    case 'L':   return [nominal * 0.2, nominal * 3];
+    case 'C':   return [nominal * 0.2, nominal * 4];
+    case 'R':   return [nominal * 0.3, nominal * 3];
+    default:    return [nominal * 0.1, nominal * 10];
+  }
+}
+
+/** Compact, readable formatting for an auto-filled range value. */
+function formatRangeNum(v) {
+  if (!Number.isFinite(v)) return '';
+  const a = Math.abs(v);
+  if (a === 0) return '0';
+  if (a >= 1000 || a < 0.001) return v.toExponential(2).replace('e+', 'e').replace('e-0', 'e-').replace('e+0','e');
+  if (a >= 10) return v.toFixed(0);
+  if (a >= 1) return v.toFixed(2);
+  if (a >= 0.01) return v.toFixed(4);
+  return v.toFixed(5);
+}
+
 export function renderStabilityPage(mount, store) {
   mount.replaceChildren();
 
@@ -50,11 +85,14 @@ export function renderStabilityPage(mount, store) {
   mount.appendChild(topoSection);
 
   let currentForm = null;
+  // Forward-declared: assigned below once controls exist
+  let autoFillRange = () => {};
   const picker = renderTopologyPicker((topology) => {
     store.topology = topology;
     currentForm = renderParamForm(topology, store.parameters);
     formWrap.replaceChildren(currentForm.element);
     runBtn.disabled = false;
+    autoFillRange();
   });
   pickerWrap.appendChild(picker);
   if (store.topology) {
@@ -68,10 +106,11 @@ export function renderStabilityPage(mount, store) {
   const controls = document.createElement('div');
   controls.className = 'stab-controls';
   const paramSel = labeledSelect('Sweep parameter', SWEEPABLE.map(s => [s.id, s.label]), 'Ki1');
-  const minIn = labeledInput('Min', '100');
-  const maxIn = labeledInput('Max', '30000');
+  const minIn = labeledInput('Min', '');
+  const maxIn = labeledInput('Max', '');
+  minIn.input.placeholder = 'auto';
+  maxIn.input.placeholder = 'auto';
   const logChk = labeledCheckbox('Log scale', false);
-  // Tooltip explaining log scale
   logChk.wrap.title = 'Off: sweep points evenly spaced linearly.\n' +
     'On: points evenly spaced in log10. Use when the parameter spans decades ' +
     'or you don\'t know where the bifurcation is.';
@@ -88,6 +127,22 @@ export function renderStabilityPage(mount, store) {
   controls.appendChild(runBtn);
   ctrlSection.appendChild(controls);
   mount.appendChild(ctrlSection);
+
+  // Auto min/max: prefill when the user selects a different parameter, unless
+  // they have manually entered a value. We auto-fill on topology pick and on
+  // sweep-parameter change; manual edits in between are honored until the user
+  // clears the field or changes the sweep parameter.
+  autoFillRange = () => {
+    if (!store.topology || !currentForm) return;
+    const params = currentForm.getValues();
+    const nominal = params[paramSel.select.value];
+    const [mn, mx] = defaultRange(paramSel.select.value, Number(nominal));
+    minIn.input.value = formatRangeNum(mn);
+    maxIn.input.value = formatRangeNum(mx);
+  };
+  paramSel.select.addEventListener('change', autoFillRange);
+  // initial fill if a topology is already selected
+  if (store.topology) autoFillRange();
 
   const status = document.createElement('p');
   status.className = 'hint';
@@ -139,6 +194,9 @@ function renderAnalysis(root, topology, p, paramId, range, res = 'med') {
 
   const sw = sweepParameter(topology, p, paramId, { ...range, points: RES.sw });
 
+  // Headline summary — the one-glance "what's the critical parameter" card.
+  root.appendChild(bifurcationSummaryCard(paramLabel, paramId, p[paramId], sw));
+
   root.appendChild(h('Step 1 — Eigenvalue locus & bifurcation'));
   // Build a clearer status text using the new bifurcation + firstCrossing
   let bifText = `Sweeping ${paramLabel} from ${fmtNum(range.min)} to ${fmtNum(range.max)}. `;
@@ -155,7 +213,11 @@ function renderAnalysis(root, topology, p, paramId, range, res = 'med') {
     bifText += 'No bifurcation in this range — stable throughout.';
   }
   root.appendChild(stepText(bifText));
-  root.appendChild(plotCard('Eigenvalue locus (complex plane)', locusChart(sw)));
+  const bifVal = sw.bifurcation ? sw.bifurcation.value : (sw.firstCrossing ? sw.firstCrossing.value : null);
+  root.appendChild(plotCard('Eigenvalue locus (complex plane)', locusChart(sw, bifVal)));
+  // Zoomed-in view of the slow region (paper-style — focuses on modes near the imag axis)
+  root.appendChild(plotCard('Eigenvalue locus — slow region zoom',
+    locusChart(sw, bifVal, { slow: true, fs: p.fs })));
   root.appendChild(plotCard(`Max real part vs ${paramLabel}`, maxRealChart(sw, paramLabel, range.log)));
 
   root.appendChild(h('Step 2 — Bifurcation diagram'));
@@ -226,7 +288,7 @@ function renderAnalysis(root, topology, p, paramId, range, res = 'med') {
   studyBtn.addEventListener('click', () => {
     studyBtn.disabled = true; studyBtn.textContent = 'Running design study…';
     setTimeout(() => {
-      try { renderDesignStudy(studyOut, topology, p); }
+      try { renderDesignStudy(studyOut, topology, p, res); }
       catch (err) { console.error(err); studyOut.textContent = 'Error: ' + err.message; }
       studyBtn.textContent = 'Re-run L/C design study'; studyBtn.disabled = false;
     }, 30);
@@ -234,15 +296,22 @@ function renderAnalysis(root, topology, p, paramId, range, res = 'med') {
   root.append(studyBtn, studyOut);
 }
 
-function renderDesignStudy(root, topology, p) {
+function renderDesignStudy(root, topology, p, res = 'med') {
   root.replaceChildren();
   const lc = lcResonanceHz(p);
 
-  const Lstudy = criticalScaling(topology, p, 'L', { min: p.L * 0.25, max: p.L * 4, points: 7 }, { min: 50, max: 200000 });
+  // Resolution -> point counts. Higher = smoother curves, slower bisection.
+  const RES = {
+    low:  { lc: 9,  surfX: 10, surfY: 8 },
+    med:  { lc: 15, surfX: 14, surfY: 12 },
+    high: { lc: 25, surfX: 22, surfY: 18 },
+  }[res] || { lc: 15, surfX: 14, surfY: 12 };
+
+  const Lstudy = criticalScaling(topology, p, 'L', { min: p.L * 0.25, max: p.L * 4, points: RES.lc }, { min: 50, max: 200000 });
   root.appendChild(plotCard('Critical Ki1 vs L', critScaleChart(Lstudy, 'L (H)')));
   root.appendChild(plotCard('Ki1_crit × L (≈ constant?)', critProductChart(Lstudy, 'L (H)')));
 
-  const Cstudy = criticalScaling(topology, p, 'C', { min: p.C * 0.33, max: p.C * 3, points: 6 }, { min: 50, max: 200000 });
+  const Cstudy = criticalScaling(topology, p, 'C', { min: p.C * 0.33, max: p.C * 3, points: RES.lc }, { min: 50, max: 200000 });
   root.appendChild(plotCard('Critical Ki1 vs C (weak effect)', critScaleChart(Cstudy, 'C (F)')));
 
   const Lspread = ratioSpread(Lstudy.critKi1);
@@ -255,23 +324,112 @@ function renderDesignStudy(root, topology, p) {
   root.appendChild(h('Design surface — Ki1_crit(L, Kp1)'));
   root.appendChild(stepText('Engineer\u2019s lookup chart: maximum stable Ki1 for each (L, Kp1). Brighter = more headroom.'));
   const surf = designSurface(topology, p,
-    { id: 'L', min: p.L * 0.3, max: p.L * 3, points: 12 },
-    { id: 'Kp1', min: p.Kp1 * 0.3, max: p.Kp1 * 3, points: 10 },
+    { id: 'L', min: p.L * 0.3, max: p.L * 3, points: RES.surfX },
+    { id: 'Kp1', min: p.Kp1 * 0.3, max: p.Kp1 * 3, points: RES.surfY },
     { min: 50, max: 200000 });
   root.appendChild(plotCard('Ki1_crit lookup (L horizontal, Kp1 vertical)', surfaceCard(surf, 'L (H)', 'Kp1')));
 }
 
 /* ---------- chart builders ---------- */
-function locusChart(sw) {
-  const reAll = [], imAll = [];
-  for (const eigs of sw.eigs) for (const e of eigs) { reAll.push(e.re); imAll.push(e.im); }
-  const imMin = Math.min(...imAll), imMax = Math.max(...imAll);
+
+/**
+ * Match eigenvalues across sweep steps so each eigenvalue has a coherent
+ * trajectory (the eigensolver returns them in arbitrary order each call).
+ * Greedy nearest-neighbour assignment from one step to the next.
+ * Returns: tracks[k] = [{re, im, value}, ...] for each of N eigenvalues.
+ */
+function buildEigenTracks(sw) {
+  const N = sw.eigs[0] ? sw.eigs[0].length : 0;
+  if (!N) return [];
+  // start: tracks initialized with first column
+  const tracks = sw.eigs[0].map(e => [{ re: e.re, im: e.im, value: sw.values[0] }]);
+  for (let i = 1; i < sw.eigs.length; i++) {
+    const prev = tracks.map(t => t[t.length - 1]);
+    const curr = sw.eigs[i].slice();
+    const taken = new Array(curr.length).fill(false);
+    // For each previous endpoint, pick the unassigned current eig with min distance
+    for (let k = 0; k < prev.length; k++) {
+      let bestJ = -1, bestD = Infinity;
+      for (let j = 0; j < curr.length; j++) {
+        if (taken[j]) continue;
+        const dr = curr[j].re - prev[k].re, di = curr[j].im - prev[k].im;
+        const d = dr * dr + di * di;
+        if (d < bestD) { bestD = d; bestJ = j; }
+      }
+      if (bestJ >= 0) {
+        taken[bestJ] = true;
+        tracks[k].push({ re: curr[bestJ].re, im: curr[bestJ].im, value: sw.values[i] });
+      }
+    }
+  }
+  return tracks;
+}
+
+// 8-mode color palette (distinct, accessible on the light plot panel)
+const MODE_COLORS = [
+  '#2b6cb0', '#c0392b', '#27ae60', '#8e44ad',
+  '#e67e22', '#16a085', '#d4ac0d', '#7f8c8d',
+];
+
+function locusChart(sw, bifValue, opts = {}) {
+  const tracks = buildEigenTracks(sw);
+  if (!tracks.length) return createChart({ series: [] });
+
+  // For the slow-region zoom, restrict each track to points whose |im| is below
+  // a slow-band threshold (e.g. 0.3 * fs in Hz). The track itself is unchanged;
+  // we just hand the chart a y-axis clip range so the fast modes fall off-plot.
+  const fs = opts.fs || 40e3;
+  const slowImLimit = 2 * Math.PI * 0.3 * fs;
+
+  // Build series: one line per eigenvalue trajectory + endpoint markers + bifurcation markers
+  const series = [];
+  for (let k = 0; k < tracks.length; k++) {
+    const tk = tracks[k];
+    const color = MODE_COLORS[k % MODE_COLORS.length];
+    // In slow mode, only include tracks that ever dip into the slow band
+    if (opts.slow && !tk.some(p => Math.abs(p.im) < slowImLimit)) continue;
+    series.push({
+      x: tk.map(p => p.re), y: tk.map(p => p.im),
+      color, width: 1.4, label: `λ${k + 1}`,
+    });
+  }
+  // start markers (green circles) and end markers (red triangles) for each track
+  const filteredTracks = opts.slow ? tracks.filter(t => t.some(p => Math.abs(p.im) < slowImLimit)) : tracks;
+  const startX = filteredTracks.map(t => t[0].re), startY = filteredTracks.map(t => t[0].im);
+  const endX = filteredTracks.map(t => t[t.length - 1].re), endY = filteredTracks.map(t => t[t.length - 1].im);
+  series.push({ x: startX, y: startY, color: '#27ae60', marker: 'circle', markerOnly: true, markerSize: 5, label: 'start (nominal)' });
+  series.push({ x: endX, y: endY, color: '#c0392b', marker: 'triangle', markerOnly: true, markerSize: 6, label: 'end of sweep' });
+
+  // bifurcation markers (black squares): the eigenvalues at the bifurcation value, if known
+  if (bifValue != null && Number.isFinite(bifValue)) {
+    let bi = 0, bd = Infinity;
+    for (let i = 0; i < sw.values.length; i++) {
+      const d = Math.abs(sw.values[i] - bifValue);
+      if (d < bd) { bd = d; bi = i; }
+    }
+    const bifEigs = (sw.eigs[bi] || []).filter(e => !opts.slow || Math.abs(e.im) < slowImLimit);
+    series.push({
+      x: bifEigs.map(e => e.re), y: bifEigs.map(e => e.im),
+      color: '#1e1e1c', marker: 'square', markerOnly: true, markerSize: 5,
+      label: 'at bifurcation',
+    });
+  }
+
+  // Re=0 axis as dashed reference
+  let allIm;
+  if (opts.slow) {
+    allIm = filteredTracks.flatMap(t => t.filter(p => Math.abs(p.im) < slowImLimit).map(p => p.im));
+  } else {
+    allIm = tracks.flatMap(t => t.map(p => p.im));
+  }
+  if (!allIm.length) allIm = [-1, 1];
+  const imMin = Math.min(...allIm), imMax = Math.max(...allIm);
+  series.push({ x: [0, 0], y: [imMin, imMax], color: '#c0392b', width: 1, dash: '5,4', label: 'Re = 0' });
+
   return createChart({
-    series: [
-      { x: reAll, y: imAll, color: '#8b7ff0', marker: 'cross', label: 'eigenvalues (swept)' },
-      { x: [0, 0], y: [imMin, imMax], color: '#c0392b', width: 1, dash: '5,4', label: 'Re = 0' },
-    ],
-    xLabel: 'Real part (1/s)', yLabel: 'Imag part (rad/s)',
+    series,
+    xLabel: 'Real part (1/s)',
+    yLabel: 'Imag part (rad/s)',
   });
 }
 function maxRealChart(sw, paramLabel, log) {
@@ -323,62 +481,55 @@ function participationCard(part) {
 function participation3DCard(perEigenFactors, eigs, stateLabels) {
   const card = document.createElement('div'); card.className = 'plot-card';
   const title = document.createElement('h3');
-  title.textContent = 'Participation factors — all eigenvalues vs all states (Zhang Fig. 9 style)';
+  title.textContent = 'Participation factors — all modes vs all states';
   card.appendChild(title);
 
   const svgNS = 'http://www.w3.org/2000/svg';
-  const W = 760, H = 480;
+  const W = 780, H = 480;
   const svg = document.createElementNS(svgNS, 'svg');
   svg.setAttribute('viewBox', `0 0 ${W} ${H}`); svg.setAttribute('width', '100%');
 
-  // axes geometry: isometric projection
-  // x-axis (state vars) runs along screen-x; y-axis (eigenvalues, depth) runs into the page
-  // We render with a 30-degree axonometric: deltaY per depth-unit = (cos30, -sin30)
-  const N = 8;                  // states (x) and eigenvalues (y)
-  const cellW = 38, depthW = 26;   // screen size per cell in x / depth
+  const N = 8;
+  const cellW = 38, depthW = 26;
   const dx_dep = depthW * Math.cos(Math.PI / 6);
   const dy_dep = -depthW * Math.sin(Math.PI / 6);
-  const heightUnit = 380;       // px for P = 1
-  const ox = 110;               // origin x
-  const oy = 410;               // origin y (front-left of floor)
+  const heightUnit = 360;
+  const ox = 130;
+  const oy = 410;
 
-  // find max for normalization (cap at 0.6 like the paper)
+  // pmax for normalization (with floor so empty rows still render axes sensibly)
   let pmax = 0;
   for (const row of perEigenFactors) for (const v of row) if (v > pmax) pmax = v;
   if (pmax < 0.1) pmax = 0.1;
 
-  // color map (low -> high): dark blue, cyan, green, yellow, orange, red
-  const colormap = (t) => {
-    const stops = [
-      [0.00, [40, 50, 130]],
-      [0.20, [60, 130, 200]],
-      [0.40, [80, 200, 180]],
-      [0.55, [180, 220, 80]],
-      [0.75, [240, 170, 50]],
-      [1.00, [210, 50, 40]],
-    ];
-    t = Math.max(0, Math.min(1, t));
-    for (let i = 1; i < stops.length; i++) {
-      if (t <= stops[i][0]) {
-        const [t0, c0] = stops[i - 1], [t1, c1] = stops[i];
-        const u = (t - t0) / (t1 - t0);
-        const r = Math.round(c0[0] + u * (c1[0] - c0[0]));
-        const g = Math.round(c0[1] + u * (c1[1] - c0[1]));
-        const b = Math.round(c0[2] + u * (c1[2] - c0[2]));
-        return `rgb(${r},${g},${b})`;
-      }
-    }
-    return 'rgb(210,50,40)';
+  // Mode label = frequency (or "DC" for real eigenvalues). Per-row colors from
+  // the report's blue/orange/yellow/purple palette, repeated as needed.
+  const MODE_PALETTE = [
+    '#3b82f6',  // blue
+    '#f97316',  // orange
+    '#eab308',  // yellow
+    '#a855f7',  // purple
+    '#10b981',  // green
+    '#ef4444',  // red
+    '#06b6d4',  // cyan
+    '#f59e0b',  // amber
+  ];
+  const modeLabel = (j) => {
+    const e = eigs[j];
+    if (!e) return '';
+    if (Math.abs(e.im) < 1) return 'DC';
+    const f = Math.abs(e.im) / (2 * Math.PI);
+    if (f >= 1000) return (f / 1000).toFixed(1) + ' kHz';
+    return f.toFixed(0) + ' Hz';
   };
+  const modeColor = (j) => MODE_PALETTE[j % MODE_PALETTE.length];
 
   // floor grid
   const floorPath = document.createElementNS(svgNS, 'path');
   let d = `M ${ox} ${oy} `;
   for (let i = 1; i <= N; i++) {
-    const x = ox + i * cellW, y = oy;
-    d += `L ${x} ${y} `;
-    d += `L ${x + N * dx_dep} ${y + N * dy_dep} `;
-    d += `M ${x} ${y} `;
+    const x = ox + i * cellW;
+    d += `L ${x} ${oy} L ${x + N * dx_dep} ${oy + N * dy_dep} M ${x} ${oy} `;
   }
   d += `M ${ox} ${oy} L ${ox + N * dx_dep} ${oy + N * dy_dep} `;
   for (let j = 1; j <= N; j++) {
@@ -391,31 +542,15 @@ function participation3DCard(perEigenFactors, eigs, stateLabels) {
   floorPath.setAttribute('stroke-width', '0.6');
   svg.appendChild(floorPath);
 
-  // draw bars: paint back rows first, then front. eigenvalues axis is depth.
-  // each bar: footprint at (i,j) [state i, eigen j], height h proportional to P.
-  for (let j = N - 1; j >= 0; j--) {         // back-to-front
-    for (let i = 0; i < N; i++) {            // left-to-right
+  // bars: back-to-front for painter's algorithm. Color is per-mode (depth row).
+  for (let j = N - 1; j >= 0; j--) {
+    const fillCol = modeColor(j);
+    const sideCol = darken(fillCol, 0.72);
+    const topCol = lighten(fillCol, 1.1);
+    for (let i = 0; i < N; i++) {
       const v = perEigenFactors[j] ? perEigenFactors[j][i] : 0;
       if (v < 0.005) continue;
       const h = (v / pmax) * heightUnit;
-      const fillNorm = v / pmax;
-      const fillCol = colormap(fillNorm);
-      const sideCol = darken(fillCol, 0.75);
-      const backCol = darken(fillCol, 0.55);
-      // Footprint corners (front-left, front-right, back-right, back-left)
-      const flX = ox + i * cellW + 3,                 flY = oy + j * dy_dep + j * 0;
-      const frX = flX + cellW - 6,                    frY = flY;
-      const brX = frX + dx_dep * 0.85,                brY = flY + dy_dep * 0.85;
-      const blX = flX + dx_dep * 0.85,                blY = flY + dy_dep * 0.85;
-      // top corners (height = h up the screen)
-      const topFL = [flX, flY + j * (-0) - h * 0 + (dy_dep * j) * 0]; // placeholder
-      const flTopY = flY + (j * 0) - h;
-      const frTopY = frY - h;
-      const brTopY = brY - h;
-      const blTopY = blY - h;
-      // shift bars by depth row offset (already in flY via dy_dep*j? no — they're at oy*level)
-      // RE-DO: simpler. front-left = (ox + i*cellW + 3 + j*dx_dep, oy + j*dy_dep). All four
-      // footprint corners and four top corners follow.
       const FL = [ox + i * cellW + 4 + j * dx_dep, oy + j * dy_dep];
       const FR = [FL[0] + cellW - 8,               FL[1]];
       const BR = [FR[0] + dx_dep * 0.85,           FR[1] + dy_dep * 0.85];
@@ -424,47 +559,62 @@ function participation3DCard(perEigenFactors, eigs, stateLabels) {
       const tFR = [FR[0], FR[1] - h];
       const tBR = [BR[0], BR[1] - h];
       const tBL = [BL[0], BL[1] - h];
-      // back face (drawn first under top/right)
-      addPolygon(svg, svgNS, [BL, BR, tBR, tBL], backCol, 0.6);
-      // right side
-      addPolygon(svg, svgNS, [FR, BR, tBR, tFR], sideCol, 0.7);
-      // front face
-      addPolygon(svg, svgNS, [FL, FR, tFR, tFL], fillCol, 0.9);
-      // top
-      addPolygon(svg, svgNS, [tFL, tFR, tBR, tBL], colormap(Math.min(1, fillNorm + 0.05)), 1);
+      // right side, front face, top
+      addPolygon(svg, svgNS, [FR, BR, tBR, tFR], sideCol, 0.9);
+      addPolygon(svg, svgNS, [FL, FR, tFR, tFL], fillCol, 0.95);
+      addPolygon(svg, svgNS, [tFL, tFR, tBR, tBL], topCol, 1);
+      // Value label on tall bars (P >= 0.30) — keeps the chart legible
+      if (v >= 0.30) {
+        const lblX = (tFL[0] + tBR[0]) / 2;
+        const lblY = (tFL[1] + tBR[1]) / 2 - 4;
+        const t = svgText(svgNS, lblX, lblY, v.toFixed(2), 'middle', '#e3e6ee', 11);
+        t.setAttribute('font-weight', '700');
+        t.setAttribute('stroke', '#1c1a30');
+        t.setAttribute('stroke-width', '0.6');
+        t.setAttribute('paint-order', 'stroke');
+        svg.appendChild(t);
+      }
     }
   }
 
-  // x-axis labels (states), placed below front edge
+  // x-axis labels (state variables) under the front edge
   for (let i = 0; i < N; i++) {
     const x = ox + i * cellW + cellW / 2;
-    const y = oy + 18;
-    const t = svgText(svgNS, x, y, stateLabels[i], 'middle', '#cdd2db', 11);
-    svg.appendChild(t);
+    svg.appendChild(svgText(svgNS, x, oy + 18, stateLabels[i], 'middle', '#cdd2db', 11));
   }
-  // y-axis labels (eigenvalues), placed at right end of each depth row
+  // depth-axis labels (mode frequency) at the right edge of each row
   for (let j = 0; j < N; j++) {
     const sx = ox + N * cellW + j * dx_dep + 10;
     const sy = oy + j * dy_dep + 4;
-    const label = `λ${j + 1}`;
-    svg.appendChild(svgText(svgNS, sx, sy, label, 'start', '#cdd2db', 11));
+    svg.appendChild(svgText(svgNS, sx, sy, modeLabel(j), 'start', '#cdd2db', 11));
   }
-  // z-axis ticks (P value)
-  for (let frac of [0, 0.2, 0.4, 0.6, 0.8, 1]) {
+  // z-axis (P) ticks
+  for (const frac of [0, 0.2, 0.4, 0.6, 0.8, 1]) {
     const tickY = oy - frac * heightUnit;
     svg.appendChild(svgText(svgNS, ox - 6, tickY + 4, (frac * pmax).toFixed(2), 'end', '#aeb4c2', 10));
-    const line = document.createElementNS(svgNS, 'line');
-    line.setAttribute('x1', ox - 2); line.setAttribute('y1', tickY);
-    line.setAttribute('x2', ox); line.setAttribute('y2', tickY);
-    line.setAttribute('stroke', '#aeb4c2'); line.setAttribute('stroke-width', '0.6');
-    svg.appendChild(line);
+    const ln = document.createElementNS(svgNS, 'line');
+    ln.setAttribute('x1', ox - 2); ln.setAttribute('y1', tickY);
+    ln.setAttribute('x2', ox); ln.setAttribute('y2', tickY);
+    ln.setAttribute('stroke', '#aeb4c2'); ln.setAttribute('stroke-width', '0.6');
+    svg.appendChild(ln);
   }
-  // axis labels
+  // axis titles
   svg.appendChild(svgText(svgNS, ox - 40, oy - heightUnit / 2, 'P', 'middle', '#e3e6ee', 14));
   svg.appendChild(svgText(svgNS, ox + N * cellW / 2, oy + 38, 'State variables', 'middle', '#e3e6ee', 12));
+  svg.appendChild(svgText(svgNS, ox + N * cellW + N * dx_dep / 2 + 30, oy + N * dy_dep / 2 - 6,
+                          'Mode (frequency)', 'start', '#e3e6ee', 12));
 
   card.appendChild(svg);
   return card;
+}
+
+function lighten(rgb, factor) {
+  const m = rgb.match(/#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/i);
+  if (!m) return rgb;
+  const r = Math.min(255, Math.round(parseInt(m[1], 16) * factor));
+  const g = Math.min(255, Math.round(parseInt(m[2], 16) * factor));
+  const b = Math.min(255, Math.round(parseInt(m[3], 16) * factor));
+  return `rgb(${r},${g},${b})`;
 }
 
 function addPolygon(svg, ns, pts, fill, alpha) {
@@ -631,6 +781,55 @@ function banner(classification, eigs) {
   const maxRe = Math.max(...eigs.map(e => e.re));
   div.textContent = `Nominal: ${classification.toUpperCase()} — max real part ${maxRe.toFixed(1)} (1/s)`;
   return div;
+}
+
+/**
+ * One-glance "headline" card naming the critical parameter, the bifurcation
+ * type, its value, frequency, and the margin from the nominal operating point.
+ */
+function bifurcationSummaryCard(paramLabel, paramId, nominalValue, sw) {
+  const card = document.createElement('div');
+  card.className = 'plot-card stab-bif-summary';
+  const title = document.createElement('h3');
+  title.textContent = 'Bifurcation summary';
+  card.appendChild(title);
+
+  const tbl = document.createElement('table');
+  tbl.className = 'stab-bif-table';
+  const row = (k, v) => {
+    const tr = document.createElement('tr');
+    const td1 = document.createElement('td'); td1.textContent = k;
+    const td2 = document.createElement('td'); td2.textContent = v;
+    tr.append(td1, td2); tbl.appendChild(tr);
+  };
+
+  row('Sweep parameter', paramLabel);
+  row('Nominal value', fmtNum(nominalValue));
+
+  if (sw.bifurcation) {
+    const b = sw.bifurcation;
+    const margin = nominalValue !== 0 ? (b.value / nominalValue) : NaN;
+    row('Bifurcation type', b.type);
+    row('Critical value', fmtNum(b.value));
+    if (b.type === 'Hopf' && b.freqHz > 0) row('Oscillation frequency', `${b.freqHz.toFixed(0)} Hz`);
+    if (Number.isFinite(margin)) {
+      const marginStr = margin > 1
+        ? `${margin.toFixed(1)}× nominal`
+        : `nominal / ${(1 / margin).toFixed(1)}`;
+      row('Margin from nominal', marginStr);
+    }
+    if (sw.firstCrossing && Math.abs(sw.firstCrossing.value - b.value) > 1e-3) {
+      row('Additional crossing', `${fmtNum(sw.firstCrossing.value)} (${sw.firstCrossing.type})`);
+    }
+  } else if (sw.firstCrossing) {
+    row('Crossing type', sw.firstCrossing.type);
+    row('Crossing value', fmtNum(sw.firstCrossing.value));
+    if (sw.firstCrossing.freqHz > 0) row('Frequency', `${sw.firstCrossing.freqHz.toFixed(0)} Hz`);
+  } else {
+    row('Result', 'No bifurcation in the swept range — stable throughout.');
+  }
+  card.appendChild(tbl);
+  return card;
 }
 function labeledSelect(label, opts, def) {
   const wrap = document.createElement('label'); wrap.className = 'stab-field';

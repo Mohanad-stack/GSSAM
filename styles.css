@@ -356,3 +356,25 @@ a { color: var(--accent); }
 .design-table { width: 100%; border-collapse: collapse; margin: 0.4rem 0 1rem; font-size: 0.92rem; }
 .design-table td { padding: 0.5rem 0.7rem; border-bottom: 1px solid var(--border); color: var(--fg); }
 .design-table .design-key { color: var(--muted); font-weight: 600; width: 32%; }
+
+/* Bifurcation summary card */
+.stab-bif-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.stab-bif-table td {
+  padding: 0.35rem 0.6rem;
+  border-bottom: 1px solid #2a2742;
+  color: #e3e6ee;
+  font-size: 0.95rem;
+}
+.stab-bif-table td:first-child {
+  color: #aeb4c2;
+  width: 38%;
+}
+.stab-bif-table td:last-child {
+  font-weight: 600;
+}
+.stab-bif-table tr:last-child td {
+  border-bottom: none;
+}

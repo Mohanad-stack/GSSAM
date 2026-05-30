@@ -113,8 +113,17 @@ export function createChart(spec) {
     const g = document.createElementNS(NS, 'g');
     g.setAttribute('clip-path', `url(#${clipId})`);
     for (const s of spec.series) {
-      if (s.marker === 'cross') {
+      const m = s.marker;
+      // Marker-only series (no line): render markers, skip line
+      if (m && s.markerOnly) {
+        for (let i = 0; i < s.x.length; i++) g.appendChild(drawMarker(m, xScale(s.x[i]), yScale(s.y[i]), s.color, s.markerSize || 5));
+      } else if (m === 'cross') {
+        // Back-compat: 'cross' alone means markers only
         for (let i = 0; i < s.x.length; i++) g.appendChild(cross(xScale(s.x[i]), yScale(s.y[i]), s.color));
+      } else if (m) {
+        // Line PLUS markers (e.g. trajectory with endpoint dots)
+        g.appendChild(curve(s.x, s.y, xScale, yScale, s.color, s.width || 1.5, s.dash));
+        for (let i = 0; i < s.x.length; i++) g.appendChild(drawMarker(m, xScale(s.x[i]), yScale(s.y[i]), s.color, s.markerSize || 5));
       } else {
         g.appendChild(curve(s.x, s.y, xScale, yScale, s.color, s.width || 1.5, s.dash));
       }
@@ -246,6 +255,34 @@ function cross(cx, cy, color, size = 5) {
   g.appendChild(line(cx - size, cy - size, cx + size, cy + size, color, 1.8));
   g.appendChild(line(cx - size, cy + size, cx + size, cy - size, color, 1.8));
   return g;
+}
+function drawMarker(kind, cx, cy, color, size = 5) {
+  if (kind === 'cross') return cross(cx, cy, color, size);
+  if (kind === 'circle') {
+    const c = document.createElementNS(NS, 'circle');
+    c.setAttribute('cx', cx); c.setAttribute('cy', cy); c.setAttribute('r', size);
+    c.setAttribute('fill', color); c.setAttribute('stroke', '#1c1a30'); c.setAttribute('stroke-width', 0.8);
+    return c;
+  }
+  if (kind === 'triangle') {
+    const t = document.createElementNS(NS, 'polygon');
+    const s = size * 1.15;
+    t.setAttribute('points', `${cx},${cy - s} ${cx - s},${cy + s * 0.85} ${cx + s},${cy + s * 0.85}`);
+    t.setAttribute('fill', color); t.setAttribute('stroke', '#1c1a30'); t.setAttribute('stroke-width', 0.8);
+    return t;
+  }
+  if (kind === 'square') {
+    const r = document.createElementNS(NS, 'rect');
+    r.setAttribute('x', cx - size); r.setAttribute('y', cy - size);
+    r.setAttribute('width', size * 2); r.setAttribute('height', size * 2);
+    r.setAttribute('fill', color); r.setAttribute('stroke', '#1c1a30'); r.setAttribute('stroke-width', 0.8);
+    return r;
+  }
+  // fallback dot
+  const d = document.createElementNS(NS, 'circle');
+  d.setAttribute('cx', cx); d.setAttribute('cy', cy); d.setAttribute('r', size * 0.7);
+  d.setAttribute('fill', color);
+  return d;
 }
 function text(x, y, str, anchor, cls) {
   const t = document.createElementNS(NS, 'text');

@@ -34,7 +34,7 @@ export function renderComparison(container, topology, parameters, modelMode = 'l
   cyclesLabel.append(document.createTextNode('Cycles: '));
   const cyclesInput = document.createElement('input');
   cyclesInput.type = 'number';
-  cyclesInput.value = '600';
+  cyclesInput.value = '2500';
   cyclesInput.min = '20';
   cyclesInput.max = '10000';
   cyclesInput.step = '100';
