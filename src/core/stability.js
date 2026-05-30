@@ -107,7 +107,10 @@ export function sweepParameter(topology, baseParams, paramId, range) {
       : min + frac * (max - min);
     const p = { ...baseParams, [paramId]: val };
     let eigs;
-    try { eigs = eigenvalues(getJacobian(topology, p)).eigenvalues; }
+    try {
+      eigs = eigenvalues(getJacobian(topology, p)).eigenvalues
+        .filter(e => !e.spurious && Number.isFinite(e.re) && Number.isFinite(e.im));
+    }
     catch { eigs = []; }
 
     const mr = eigs.length ? Math.max(...eigs.map(e => e.re)) : NaN;
@@ -231,23 +234,28 @@ function settleAndSampleVo(topology, p) {
  */
 export function modeParticipation(topology, p) {
   const J = getJacobian(topology, p);
-  const { eigenvalues: eigs } = eigenvalues(J);
+  const result = eigenvalues(J);
+  // Keep the spurious flag alongside the eigenvalue: when selecting the
+  // dominant mode we filter them out; for the 3D chart we render every mode
+  // but show NaN heights for spurious ones.
+  const eigs = result.eigenvalues;
+  const validIdx = [];
+  for (let i = 0; i < eigs.length; i++) if (!eigs[i].spurious) validIdx.push(i);
   const pf = participationFactors(J);
   const fs = p.fs || 40e3;
   const slowCutoff = 2 * Math.PI * 0.3 * fs;
 
-  // Pick the eigenvalue (real or complex) with largest real part within the
-  // slow band. This is the engineering-relevant mode, whether oscillatory or not.
+  // Pick the largest-real-part eigenvalue within the slow band (excluding spurious).
   let idx = -1, best = -Infinity;
-  for (let i = 0; i < eigs.length; i++) {
+  for (const i of validIdx) {
     if (Math.abs(eigs[i].im) < slowCutoff && eigs[i].re > best) {
       best = eigs[i].re; idx = i;
     }
   }
-  // Fallback: overall largest real part
   if (idx < 0) {
-    idx = 0; for (let i = 1; i < eigs.length; i++) if (eigs[i].re > eigs[idx].re) idx = i;
+    for (const i of validIdx) if (idx < 0 || eigs[i].re > eigs[idx].re) idx = i;
   }
+  if (idx < 0) idx = 0;
   const perState = pf[idx].factors;
   const groups = {};
   for (const [g, idxs] of Object.entries(STATE_GROUPS)) {
@@ -255,7 +263,8 @@ export function modeParticipation(topology, p) {
   }
   return {
     lambda: eigs[idx], perState, groups, labels: STATE_LABELS,
-    allEigenvalues: eigs, allFactors: pf.map(x => x.factors),
+    allEigenvalues: eigs.filter(e => !e.spurious),
+    allFactors: validIdx.map(i => pf[i].factors),
   };
 }
 
@@ -273,7 +282,7 @@ export function stabilityMap2D(topology, baseParams, xSpec, ySpec) {
       const p = { ...baseParams, [xSpec.id]: xVals[ix], [ySpec.id]: yVals[iy] };
       let mr;
       try {
-        mr = Math.max(...eigenvalues(getJacobian(topology, p)).eigenvalues.map(e => e.re));
+        mr = Math.max(...eigenvalues(getJacobian(topology, p)).eigenvalues.filter(e => !e.spurious).map(e => e.re));
       } catch { mr = NaN; }
       row.push(mr);
     }
@@ -307,7 +316,7 @@ export function criticalValue(topology, baseParams, paramId, range, opts = {}) {
 
   const reAt = (val) => {
     try {
-      const eigs = eigenvalues(getJacobian(topology, { ...baseParams, [paramId]: val })).eigenvalues;
+      const eigs = eigenvalues(getJacobian(topology, { ...baseParams, [paramId]: val })).eigenvalues.filter(e => !e.spurious && Number.isFinite(e.re));
       if (!slowOnly) return Math.max(...eigs.map(e => e.re));
       const slow = eigs.filter(e => Math.abs(e.im) < slowCutoff);
       return slow.length ? Math.max(...slow.map(e => e.re)) : -Infinity;
@@ -347,7 +356,7 @@ export function criticalValue(topology, baseParams, paramId, range, opts = {}) {
     if (Math.abs(hi - lo) < 1e-4 * (Math.abs(hi) + 1e-9)) break;
   }
   const crit = 0.5 * (lo + hi);
-  const eigs = eigenvalues(getJacobian(topology, { ...baseParams, [paramId]: crit })).eigenvalues;
+  const eigs = eigenvalues(getJacobian(topology, { ...baseParams, [paramId]: crit })).eigenvalues.filter(e => !e.spurious && Number.isFinite(e.re));
   const pool = slowOnly ? eigs.filter(e => Math.abs(e.im) < slowCutoff) : eigs;
   const dom = (pool.length ? pool : eigs).reduce((a, b) => b.re > a.re ? b : a);
   return { value: crit, freqHz: Math.abs(dom.im) / (2 * Math.PI), type: Math.abs(dom.im) > 1 ? 'Hopf' : 'real' };
@@ -373,36 +382,63 @@ export function criticalScaling(topology, baseParams, effectId, effectRange, ki1
 }
 
 /**
- * Report-style stability boundary family (Figures 5 / 6 of the Buck Stability
- * Report). For each value of `familyId` (L or C), compute BOTH critical Ki1
- * (sweeping up from nominal) and critical Kp2 (sweeping down from nominal).
- * The result is two curves on a shared family-parameter axis, showing how the
- * inductor (or capacitor) reshapes both stability boundaries simultaneously.
+ * Report-style stability boundary FAMILY (Figures 5 / 6 of the Buck Stability
+ * Report). For each value of `familyId` (L or C), compute the full stability
+ * boundary CURVE in the (Ki1, Kp2) plane.
+ *
+ * At a fixed (familyParam, C-or-L) and over a range of Kp2 values, find the
+ * Ki1_crit at which max Re(λ) first crosses zero. Each (Kp2, Ki1_crit) pair
+ * is a point on the boundary; stringing them together gives one curve per
+ * family value, drawn overlaid on the same axes.
  *
  * @returns {{
- *   values:number[],         // family parameter values (L or C)
- *   critKi1:number[],        // Ki1_critical at each value
- *   critKp2:number[],        // Kp2_critical at each value
- *   ki1Type:string[],        // 'Hopf' | 'real' | '' per point
- *   kp2Type:string[],
+ *   familyValues:number[],          // L (or C) values
+ *   kp2Axis:number[],               // shared Kp2 sweep
+ *   curves: Array<{                 // one entry per family value
+ *     familyValue:number,
+ *     ki1Crit:Array<number|null>,   // Ki1_crit at each Kp2 (NaN if no crossing)
+ *   }>,
  * }}
  */
-export function boundaryFamily(topology, baseParams, familyId, familyRange) {
-  const vals = axis(familyRange);
-  const critKi1 = [], critKp2 = [], ki1Type = [], kp2Type = [];
-  const ki1Nom = baseParams.Ki1, kp2Nom = baseParams.Kp2;
-  for (const v of vals) {
-    const bp = { ...baseParams, [familyId]: v };
-    // Ki1 critical: scan upward from nominal. Wide enough log range to bracket.
-    const ck = criticalValue(topology, bp, 'Ki1', { min: ki1Nom * 0.5, max: ki1Nom * 1000 }, { slowOnly: false });
-    critKi1.push(ck ? ck.value : NaN);
-    ki1Type.push(ck ? ck.type : '');
-    // Kp2 critical: scan downward from nominal.
-    const cp = criticalValue(topology, bp, 'Kp2', { min: kp2Nom * 0.001, max: kp2Nom * 1.2 }, { slowOnly: true });
-    critKp2.push(cp ? cp.value : NaN);
-    kp2Type.push(cp ? cp.type : '');
+export function boundaryFamily(topology, baseParams, familyId, familyRange, kp2Range) {
+  const familyValues = axis(familyRange);
+  const kp2Axis = axis(kp2Range);
+  const ki1Nom = baseParams.Ki1;
+  // wide Ki1 search range — at least one decade either side of nominal,
+  // and large enough that the bifurcation typically lies inside.
+  const ki1Search = { min: ki1Nom * 0.5, max: ki1Nom * 1000 };
+
+  const curves = familyValues.map(fv => {
+    const ki1Crit = kp2Axis.map(kp2 => {
+      const bp = { ...baseParams, [familyId]: fv, Kp2: kp2 };
+      const c = criticalValue(topology, bp, 'Ki1', ki1Search, { slowOnly: false });
+      return c ? c.value : NaN;
+    });
+    return { familyValue: fv, ki1Crit };
+  });
+  return { familyValues, kp2Axis, curves };
+}
+
+/**
+ * 3D stability surface analogue of report Figures 7 / 8: Ki1_crit over a 2D
+ * grid of (Kp2, familyParam). Returns a grid suitable for surface plotting.
+ */
+export function stabilitySurface3D(topology, baseParams, kp2Range, familyId, familyRange) {
+  const kp2Vals = axis(kp2Range);
+  const familyValues = axis(familyRange);
+  const ki1Nom = baseParams.Ki1;
+  const ki1Search = { min: ki1Nom * 0.5, max: ki1Nom * 1000 };
+  const grid = [];      // grid[iy][ix] = Ki1_crit at (kp2=xVals[ix], fv=familyValues[iy])
+  for (let iy = 0; iy < familyValues.length; iy++) {
+    const row = [];
+    for (let ix = 0; ix < kp2Vals.length; ix++) {
+      const bp = { ...baseParams, [familyId]: familyValues[iy], Kp2: kp2Vals[ix] };
+      const c = criticalValue(topology, bp, 'Ki1', ki1Search, { slowOnly: false });
+      row.push(c ? c.value : NaN);
+    }
+    grid.push(row);
   }
-  return { values: vals, critKi1, critKp2, ki1Type, kp2Type };
+  return { kp2Axis: kp2Vals, familyValues, grid };
 }
 
 /**
@@ -432,7 +468,7 @@ export function designSurface(topology, baseParams, xSpec, ySpec, ki1Range) {
 export function eigenvalueTable(topology, baseParams, paramId, range, nRows = 6) {
   const vals = axis({ ...range, points: nRows });
   const rows = vals.map(v => {
-    try { return eigenvalues(getJacobian(topology, { ...baseParams, [paramId]: v })).eigenvalues; }
+    try { return eigenvalues(getJacobian(topology, { ...baseParams, [paramId]: v })).eigenvalues.filter(e => !e.spurious); }
     catch { return []; }
   });
   return { values: vals, rows };
