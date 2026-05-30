@@ -66,55 +66,106 @@ function numericJacobian(f, x) {
  *   stableAtNominal: boolean
  * }}
  */
+/**
+ * Sweep one parameter across a range. At each value: rebuild A, compute
+ * eigenvalues, record TWO max-real-part trackers:
+ *
+ *   • `maxReal`     — over ALL eigenvalues. Catches any crossing, including
+ *                     fast switching-mode modes and real-axis crossings.
+ *   • `maxRealSlow` — over only the SLOW eigenvalues (|im|/2π below a
+ *                     fraction of fs, default 0.3·fs). This isolates the
+ *                     controller/LC-scale Hopf the paper tracks (Zhang fig 7B,
+ *                     Buck report Ki1=13709 / 1566 Hz) from incidental fast
+ *                     crossings.
+ *
+ * Both crossings are reported. The slow-Hopf is the primary bifurcation
+ * (engineering-relevant); any other crossing is reported as `firstCrossing`.
+ *
+ * @returns {{
+ *   values:number[], maxReal:number[], maxRealSlow:number[],
+ *   eigs:Array<Array<{re,im}>>,
+ *   bifurcation: null | { value:number, type:'Hopf'|'real', freqHz:number, lambda:{re,im} },
+ *   firstCrossing: null | { value:number, type:'Hopf'|'real', freqHz:number },
+ *   stableAtNominal: boolean
+ * }}
+ */
 export function sweepParameter(topology, baseParams, paramId, range) {
   const { min, max, points = 60, log = false } = range;
+  const fs = baseParams.fs || 40e3;
+  const slowCutoff = 2 * Math.PI * 0.3 * fs;   // anything above 0.3*fs is "fast"
+
   const values = [];
   const maxReal = [];
+  const maxRealSlow = [];
+  const slowLambda = [];   // the slow eigenvalue with largest real part at each point
   const eigsAll = [];
 
   for (let i = 0; i < points; i++) {
-    const frac = i / (points - 1);
+    const frac = points === 1 ? 0 : i / (points - 1);
     const val = log
       ? Math.pow(10, Math.log10(min) + frac * (Math.log10(max) - Math.log10(min)))
       : min + frac * (max - min);
     const p = { ...baseParams, [paramId]: val };
     let eigs;
-    try {
-      const J = getJacobian(topology, p);
-      eigs = eigenvalues(J).eigenvalues;
-    } catch {
-      eigs = [];
-    }
+    try { eigs = eigenvalues(getJacobian(topology, p)).eigenvalues; }
+    catch { eigs = []; }
+
     const mr = eigs.length ? Math.max(...eigs.map(e => e.re)) : NaN;
-    values.push(val);
-    maxReal.push(mr);
-    eigsAll.push(eigs);
+    // slow subset: |im| < slowCutoff
+    const slow = eigs.filter(e => Math.abs(e.im) < slowCutoff);
+    let slowMax = NaN, slowDom = null;
+    if (slow.length) {
+      slowDom = slow.reduce((a, b) => b.re > a.re ? b : a);
+      slowMax = slowDom.re;
+    }
+    values.push(val); maxReal.push(mr); maxRealSlow.push(slowMax);
+    slowLambda.push(slowDom); eigsAll.push(eigs);
   }
 
-  // detect first zero-crossing of maxReal (ignoring marginal integrator poles
-  // that sit at ~0 throughout — we look for a real crossing into clearly +).
-  let bifurcation = null;
-  const tol = 1; // rad/s; treat |re|<1 as on-axis
-  for (let i = 1; i < points; i++) {
-    if (maxReal[i - 1] < -tol && maxReal[i] > tol) {
-      // linear interpolate the crossing value
-      const t = (-maxReal[i - 1]) / (maxReal[i] - maxReal[i - 1]);
-      const vCross = values[i - 1] + t * (values[i] - values[i - 1]);
-      // classify using the dominant mode at i: complex => Hopf
-      const dom = [...eigsAll[i]].sort((a, b) => b.re - a.re)[0];
-      const isComplex = Math.abs(dom.im) > tol;
-      bifurcation = {
-        value: vCross,
-        type: isComplex ? 'Hopf' : 'real',
-        freqHz: isComplex ? Math.abs(dom.im) / (2 * Math.PI) : 0,
-      };
-      break;
+  // Helper: find first zero-crossing of an array, in either direction
+  const tol = 1;
+  const findCross = (arr) => {
+    for (let i = 1; i < points; i++) {
+      const a = arr[i - 1], b = arr[i];
+      if ((a < -tol && b > tol) || (a > tol && b < -tol)) {
+        const t = (-a) / (b - a);
+        return { i, val: arr[i - 1] < arr[i] ? values[i - 1] + t * (values[i] - values[i - 1])
+                                              : values[i - 1] + t * (values[i] - values[i - 1]) };
+      }
     }
+    return null;
+  };
+
+  // primary bifurcation: slow-mode crossing (the engineering Hopf)
+  let bifurcation = null;
+  const slowCross = findCross(maxRealSlow);
+  if (slowCross) {
+    const dom = slowLambda[slowCross.i];
+    const isComplex = dom && Math.abs(dom.im) > tol;
+    bifurcation = {
+      value: slowCross.val,
+      type: isComplex ? 'Hopf' : 'real',
+      freqHz: isComplex ? Math.abs(dom.im) / (2 * Math.PI) : 0,
+      lambda: dom ? { re: dom.re, im: dom.im } : null,
+    };
+  }
+
+  // first overall crossing (may be the same, may be earlier)
+  let firstCrossing = null;
+  const overall = findCross(maxReal);
+  if (overall && (!slowCross || Math.abs(overall.val - slowCross.val) / Math.max(1, slowCross.val) > 0.02)) {
+    const dom = [...eigsAll[overall.i]].sort((a, b) => b.re - a.re)[0];
+    const isComplex = dom && Math.abs(dom.im) > tol;
+    firstCrossing = {
+      value: overall.val,
+      type: isComplex ? 'Hopf' : 'real',
+      freqHz: isComplex ? Math.abs(dom.im) / (2 * Math.PI) : 0,
+    };
   }
 
   return {
-    values, maxReal, eigs: eigsAll, bifurcation,
-    stableAtNominal: maxReal[0] < tol,
+    values, maxReal, maxRealSlow, eigs: eigsAll, bifurcation, firstCrossing,
+    stableAtNominal: (maxRealSlow[0] < tol) && (maxReal[0] < tol),
   };
 }
 
@@ -167,20 +218,34 @@ function settleAndSampleVo(topology, p) {
 }
 
 /**
- * Participation factors of the dominant (largest-real-part, non-integrator)
- * mode at the given parameters, grouped into DC / Ripple / Controller.
- * @returns {{ lambda, perState:number[], groups:{DC,Ripple,Controller}, labels }}
+ * Participation factors of the dominant SLOW mode at the given parameters.
+ *
+ * "Dominant slow" = the eigenvalue with largest real part among those with
+ * |im|/(2π) < 0.3·fs (so we exclude the ~40 kHz ripple modes). This mode is
+ * what drives instability at the engineering scale — whether it is a complex
+ * pair (Hopf) or a real eigenvalue (real bifurcation). Real-mode crossings
+ * are not "wrong"; they are a different (non-oscillatory) failure mode.
+ *
+ * @returns {{ lambda, perState:number[], groups:{DC,Ripple,Controller}, labels,
+ *             allEigenvalues:Array<{re,im}>, allFactors:number[][] }}
  */
 export function modeParticipation(topology, p) {
   const J = getJacobian(topology, p);
   const { eigenvalues: eigs } = eigenvalues(J);
   const pf = participationFactors(J);
-  // dominant oscillatory mode = largest real part among complex eigenvalues
+  const fs = p.fs || 40e3;
+  const slowCutoff = 2 * Math.PI * 0.3 * fs;
+
+  // Pick the eigenvalue (real or complex) with largest real part within the
+  // slow band. This is the engineering-relevant mode, whether oscillatory or not.
   let idx = -1, best = -Infinity;
   for (let i = 0; i < eigs.length; i++) {
-    if (Math.abs(eigs[i].im) > 1 && eigs[i].re > best) { best = eigs[i].re; idx = i; }
+    if (Math.abs(eigs[i].im) < slowCutoff && eigs[i].re > best) {
+      best = eigs[i].re; idx = i;
+    }
   }
-  if (idx < 0) { // fall back to overall largest real part
+  // Fallback: overall largest real part
+  if (idx < 0) {
     idx = 0; for (let i = 1; i < eigs.length; i++) if (eigs[i].re > eigs[idx].re) idx = i;
   }
   const perState = pf[idx].factors;
@@ -188,7 +253,10 @@ export function modeParticipation(topology, p) {
   for (const [g, idxs] of Object.entries(STATE_GROUPS)) {
     groups[g] = idxs.reduce((s, k) => s + perState[k], 0);
   }
-  return { lambda: eigs[idx], perState, groups, labels: STATE_LABELS };
+  return {
+    lambda: eigs[idx], perState, groups, labels: STATE_LABELS,
+    allEigenvalues: eigs, allFactors: pf.map(x => x.factors),
+  };
 }
 
 /**
@@ -231,31 +299,37 @@ function axis({ min, max, points = 30, log = false }) {
  * (no crossing in range). `direction` = +1 if increasing the parameter
  * destabilizes (the usual case), found automatically.
  */
-export function criticalValue(topology, baseParams, paramId, range) {
+export function criticalValue(topology, baseParams, paramId, range, opts = {}) {
   const { min, max } = range;
-  const maxReAt = (val) => {
+  const slowOnly = opts.slowOnly !== false;   // default: track slow mode (the engineering Hopf)
+  const fs = baseParams.fs || 40e3;
+  const slowCutoff = 2 * Math.PI * 0.3 * fs;
+
+  const reAt = (val) => {
     try {
-      return Math.max(...eigenvalues(getJacobian(topology, { ...baseParams, [paramId]: val })).eigenvalues.map(e => e.re));
+      const eigs = eigenvalues(getJacobian(topology, { ...baseParams, [paramId]: val })).eigenvalues;
+      if (!slowOnly) return Math.max(...eigs.map(e => e.re));
+      const slow = eigs.filter(e => Math.abs(e.im) < slowCutoff);
+      return slow.length ? Math.max(...slow.map(e => e.re)) : -Infinity;
     } catch { return NaN; }
   };
   let lo = min, hi = max;
-  let flo = maxReAt(lo), fhi = maxReAt(hi);
-  // need a sign change (stable at lo, unstable at hi)
+  let flo = reAt(lo), fhi = reAt(hi);
   if (!(flo < 0 && fhi > 0)) {
-    // try reverse (decreasing destabilizes)
     if (flo > 0 && fhi < 0) { [lo, hi] = [hi, lo]; [flo, fhi] = [fhi, flo]; }
     else return null;
   }
   for (let i = 0; i < 22; i++) {
     const mid = 0.5 * (lo + hi);
-    const fm = maxReAt(mid);
+    const fm = reAt(mid);
     if (fm < 0) { lo = mid; flo = fm; } else { hi = mid; fhi = fm; }
     if (Math.abs(hi - lo) < 1e-4 * (Math.abs(hi) + 1e-9)) break;
   }
   const crit = 0.5 * (lo + hi);
-  // frequency of the crossing mode
+  // frequency of the crossing mode (use the slow mode if requested)
   const eigs = eigenvalues(getJacobian(topology, { ...baseParams, [paramId]: crit })).eigenvalues;
-  const dom = [...eigs].sort((a, b) => b.re - a.re)[0];
+  const pool = slowOnly ? eigs.filter(e => Math.abs(e.im) < slowCutoff) : eigs;
+  const dom = (pool.length ? pool : eigs).reduce((a, b) => b.re > a.re ? b : a);
   return { value: crit, freqHz: Math.abs(dom.im) / (2 * Math.PI), type: Math.abs(dom.im) > 1 ? 'Hopf' : 'real' };
 }
 

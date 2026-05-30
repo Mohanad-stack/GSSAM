@@ -71,7 +71,17 @@ export function renderStabilityPage(mount, store) {
   const minIn = labeledInput('Min', '100');
   const maxIn = labeledInput('Max', '30000');
   const logChk = labeledCheckbox('Log scale', false);
-  controls.append(paramSel.wrap, minIn.wrap, maxIn.wrap, logChk.wrap);
+  // Tooltip explaining log scale
+  logChk.wrap.title = 'Off: sweep points evenly spaced linearly.\n' +
+    'On: points evenly spaced in log10. Use when the parameter spans decades ' +
+    'or you don\'t know where the bifurcation is.';
+  const resSel = labeledSelect('Resolution', [
+    ['low',  'Low (fast)'],
+    ['med',  'Medium (default)'],
+    ['high', 'High (smooth, slower)'],
+  ], 'med');
+  resSel.wrap.title = 'Higher resolution = smoother plots but slower. Low ~3 s, Med ~7 s, High ~20 s.';
+  controls.append(paramSel.wrap, minIn.wrap, maxIn.wrap, logChk.wrap, resSel.wrap);
   const runBtn = document.createElement('button');
   runBtn.textContent = 'Run stability analysis';
   runBtn.disabled = !store.topology;
@@ -94,6 +104,7 @@ export function renderStabilityPage(mount, store) {
     const paramId = paramSel.select.value;
     const min = Number(minIn.input.value), max = Number(maxIn.input.value);
     const log = logChk.input.checked;
+    const res = resSel.select.value;
 
     status.textContent = 'Running sweep, eigen-analysis, bifurcation diagram…';
     runBtn.disabled = true;
@@ -102,7 +113,7 @@ export function renderStabilityPage(mount, store) {
     setTimeout(() => {
       const t0 = performance.now();
       try {
-        renderAnalysis(results, store.topology, resolved, paramId, { min, max, log });
+        renderAnalysis(results, store.topology, resolved, paramId, { min, max, log }, res);
         status.textContent = `Done in ${Math.round(performance.now() - t0)} ms.`;
       } catch (err) {
         console.error(err);
@@ -113,22 +124,37 @@ export function renderStabilityPage(mount, store) {
   });
 }
 
-function renderAnalysis(root, topology, p, paramId, range) {
+function renderAnalysis(root, topology, p, paramId, range, res = 'med') {
+  // Resolution presets: drive points for sweep / bifurcation diagram / 2D map / surface
+  const RES = {
+    low:  { sw: 30, bd: 18, mapX: 14, mapY: 12 },
+    med:  { sw: 60, bd: 32, mapX: 22, mapY: 18 },
+    high: { sw: 120, bd: 64, mapX: 36, mapY: 28 },
+  }[res] || { sw: 60, bd: 32, mapX: 22, mapY: 18 };
   const paramLabel = (SWEEPABLE.find(s => s.id === paramId) || {}).label || paramId;
 
   const J0 = getJacobian(topology, p);
   const { eigenvalues: eig0, classification } = eigenvalues(J0);
   root.appendChild(banner(classification, eig0));
 
-  const sw = sweepParameter(topology, p, paramId, { ...range, points: 48 });
+  const sw = sweepParameter(topology, p, paramId, { ...range, points: RES.sw });
 
   root.appendChild(h('Step 1 — Eigenvalue locus & bifurcation'));
-  root.appendChild(stepText(
-    `Sweeping ${paramLabel} from ${fmtNum(range.min)} to ${fmtNum(range.max)}. ` +
-    (sw.bifurcation
-      ? `A ${sw.bifurcation.type} bifurcation is detected at ${paramLabel} = ${fmtNum(sw.bifurcation.value)}` +
-        (sw.bifurcation.type === 'Hopf' ? `, oscillating at ≈ ${sw.bifurcation.freqHz.toFixed(0)} Hz.` : '.')
-      : 'No bifurcation found in this range — the system stays stable throughout.')));
+  // Build a clearer status text using the new bifurcation + firstCrossing
+  let bifText = `Sweeping ${paramLabel} from ${fmtNum(range.min)} to ${fmtNum(range.max)}. `;
+  if (sw.bifurcation) {
+    const f = sw.bifurcation.freqHz;
+    bifText += `Slow-mode ${sw.bifurcation.type} bifurcation at ${paramLabel} = ${fmtNum(sw.bifurcation.value)}` +
+      (sw.bifurcation.type === 'Hopf' && f > 0 ? ` (≈ ${f.toFixed(0)} Hz)` : '') + '.';
+    if (sw.firstCrossing && sw.firstCrossing.value < sw.bifurcation.value) {
+      bifText += ` An additional crossing also appears at ${fmtNum(sw.firstCrossing.value)} (${sw.firstCrossing.type}).`;
+    }
+  } else if (sw.firstCrossing) {
+    bifText += `Crossing at ${paramLabel} = ${fmtNum(sw.firstCrossing.value)} (${sw.firstCrossing.type}, fast mode).`;
+  } else {
+    bifText += 'No bifurcation in this range — stable throughout.';
+  }
+  root.appendChild(stepText(bifText));
   root.appendChild(plotCard('Eigenvalue locus (complex plane)', locusChart(sw)));
   root.appendChild(plotCard(`Max real part vs ${paramLabel}`, maxRealChart(sw, paramLabel, range.log)));
 
@@ -136,19 +162,30 @@ function renderAnalysis(root, topology, p, paramId, range) {
   root.appendChild(stepText(
     'Steady-state output voltage vs the swept parameter. A single line means one stable equilibrium; ' +
     'a fanning-out band after the bifurcation is the Hopf limit cycle.'));
-  const bd = bifurcationDiagram(topology, p, paramId, { ...range, points: 24 });
+  const bd = bifurcationDiagram(topology, p, paramId, { ...range, points: RES.bd });
   root.appendChild(plotCard(`vo steady-state vs ${paramLabel}`, bifChart(bd, paramLabel, range.log)));
 
   root.appendChild(h('Step 3 — Participation factors'));
   const pPart = { ...p };
-  pPart[paramId] = sw.bifurcation ? sw.bifurcation.value * 1.15 : range.max;
+  if (sw.bifurcation) {
+    // Determine destabilizing direction: which side of the bifurcation has positive max-real?
+    const idxNearBif = sw.values.findIndex(v => v >= sw.bifurcation.value);
+    const goingUp = idxNearBif >= 0 && idxNearBif < sw.maxRealSlow.length - 1 &&
+                    sw.maxRealSlow[idxNearBif + 1] > sw.maxRealSlow[Math.max(0, idxNearBif - 1)];
+    // step 5% past bifurcation in the destabilizing direction
+    pPart[paramId] = sw.bifurcation.value * (goingUp ? 1.05 : 0.95);
+  } else {
+    pPart[paramId] = range.max;
+  }
   const part = modeParticipation(topology, pPart);
+  const f = Math.abs(part.lambda.im) / (2 * Math.PI);
   root.appendChild(stepText(
-    `Dominant mode at ${paramLabel} = ${fmtNum(pPart[paramId])}: λ = ${part.lambda.re.toFixed(1)} ± ` +
-    `${Math.abs(part.lambda.im).toFixed(1)}j (${(Math.abs(part.lambda.im) / (2 * Math.PI)).toFixed(0)} Hz). ` +
+    `Dominant slow mode at ${paramLabel} = ${fmtNum(pPart[paramId])}: ` +
+    `λ = ${part.lambda.re.toFixed(1)}${Math.abs(part.lambda.im) > 1 ? ` ± ${Math.abs(part.lambda.im).toFixed(1)}j (${f.toFixed(0)} Hz)` : ' (real)'}.  ` +
     `Participation: DC ${(part.groups.DC * 100).toFixed(0)}%, ripple ${(part.groups.Ripple * 100).toFixed(0)}%, ` +
     `controller ${(part.groups.Controller * 100).toFixed(0)}%.`));
   root.appendChild(participationCard(part));
+  root.appendChild(participation3DCard(part.allFactors, part.allEigenvalues, part.labels));
 
   root.appendChild(h('Step 4 — 2D stability map'));
   const secondId = paramId === 'L' ? 'Ki1' : 'L';
@@ -156,9 +193,9 @@ function renderAnalysis(root, topology, p, paramId, range) {
   root.appendChild(stepText(
     `Stable (blue) vs unstable (red) region over ${paramLabel} and ${secLabel}. ` +
     'The boundary is the bifurcation locus — a design map.'));
-  const xSpec = { id: paramId, min: range.min, max: range.max, points: 20, log: range.log };
+  const xSpec = { id: paramId, min: range.min, max: range.max, points: RES.mapX, log: range.log };
   const baseSecond = p[secondId];
-  const ySpec = { id: secondId, min: baseSecond * 0.3, max: baseSecond * 3, points: 16, log: false };
+  const ySpec = { id: secondId, min: baseSecond * 0.3, max: baseSecond * 3, points: RES.mapY, log: false };
   const map = stabilityMap2D(topology, p, xSpec, ySpec);
   root.appendChild(plotCard(`Stability region: ${paramLabel} vs ${secLabel}`, mapChart(map, paramLabel, secLabel)));
 
@@ -238,13 +275,14 @@ function locusChart(sw) {
   });
 }
 function maxRealChart(sw, paramLabel, log) {
-  return createChart({
-    series: [
-      { x: sw.values, y: sw.maxReal, color: '#2b6cb0', width: 1.6, label: 'max Re(λ)' },
-      { x: [sw.values[0], sw.values[sw.values.length - 1]], y: [0, 0], color: '#c0392b', width: 1, dash: '5,4', label: 'zero' },
-    ],
-    xLabel: paramLabel, yLabel: 'max real part (1/s)', xLog: !!log,
-  });
+  const series = [
+    { x: sw.values, y: sw.maxReal, color: '#2b6cb0', width: 1.6, label: 'max Re(λ) overall' },
+  ];
+  if (sw.maxRealSlow && sw.maxRealSlow.some(v => Number.isFinite(v))) {
+    series.push({ x: sw.values, y: sw.maxRealSlow, color: '#e0a23b', width: 1.6, dash: '6,3', label: 'max Re(λ) slow mode' });
+  }
+  series.push({ x: [sw.values[0], sw.values[sw.values.length - 1]], y: [0, 0], color: '#c0392b', width: 1, dash: '5,4', label: 'zero' });
+  return createChart({ series, xLabel: paramLabel, yLabel: 'max real part (1/s)', xLog: !!log });
 }
 function bifChart(bd, paramLabel, log) {
   return createChart({
@@ -275,6 +313,175 @@ function participationCard(part) {
   title.textContent = 'Per-state participation (blue=DC, purple=ripple, amber=controller)';
   card.append(title, svg); return card;
 }
+
+/**
+ * 3D participation chart — Zhang Figure 9 analogue.
+ * Isometric SVG bar chart: 8 eigenvalues (front-to-back) × 8 state variables
+ * (left-to-right) × P value (height). Each bar colored by height with a
+ * cyan-yellow-red colormap. Bars are drawn back-to-front, painter's algorithm.
+ */
+function participation3DCard(perEigenFactors, eigs, stateLabels) {
+  const card = document.createElement('div'); card.className = 'plot-card';
+  const title = document.createElement('h3');
+  title.textContent = 'Participation factors — all eigenvalues vs all states (Zhang Fig. 9 style)';
+  card.appendChild(title);
+
+  const svgNS = 'http://www.w3.org/2000/svg';
+  const W = 760, H = 480;
+  const svg = document.createElementNS(svgNS, 'svg');
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`); svg.setAttribute('width', '100%');
+
+  // axes geometry: isometric projection
+  // x-axis (state vars) runs along screen-x; y-axis (eigenvalues, depth) runs into the page
+  // We render with a 30-degree axonometric: deltaY per depth-unit = (cos30, -sin30)
+  const N = 8;                  // states (x) and eigenvalues (y)
+  const cellW = 38, depthW = 26;   // screen size per cell in x / depth
+  const dx_dep = depthW * Math.cos(Math.PI / 6);
+  const dy_dep = -depthW * Math.sin(Math.PI / 6);
+  const heightUnit = 380;       // px for P = 1
+  const ox = 110;               // origin x
+  const oy = 410;               // origin y (front-left of floor)
+
+  // find max for normalization (cap at 0.6 like the paper)
+  let pmax = 0;
+  for (const row of perEigenFactors) for (const v of row) if (v > pmax) pmax = v;
+  if (pmax < 0.1) pmax = 0.1;
+
+  // color map (low -> high): dark blue, cyan, green, yellow, orange, red
+  const colormap = (t) => {
+    const stops = [
+      [0.00, [40, 50, 130]],
+      [0.20, [60, 130, 200]],
+      [0.40, [80, 200, 180]],
+      [0.55, [180, 220, 80]],
+      [0.75, [240, 170, 50]],
+      [1.00, [210, 50, 40]],
+    ];
+    t = Math.max(0, Math.min(1, t));
+    for (let i = 1; i < stops.length; i++) {
+      if (t <= stops[i][0]) {
+        const [t0, c0] = stops[i - 1], [t1, c1] = stops[i];
+        const u = (t - t0) / (t1 - t0);
+        const r = Math.round(c0[0] + u * (c1[0] - c0[0]));
+        const g = Math.round(c0[1] + u * (c1[1] - c0[1]));
+        const b = Math.round(c0[2] + u * (c1[2] - c0[2]));
+        return `rgb(${r},${g},${b})`;
+      }
+    }
+    return 'rgb(210,50,40)';
+  };
+
+  // floor grid
+  const floorPath = document.createElementNS(svgNS, 'path');
+  let d = `M ${ox} ${oy} `;
+  for (let i = 1; i <= N; i++) {
+    const x = ox + i * cellW, y = oy;
+    d += `L ${x} ${y} `;
+    d += `L ${x + N * dx_dep} ${y + N * dy_dep} `;
+    d += `M ${x} ${y} `;
+  }
+  d += `M ${ox} ${oy} L ${ox + N * dx_dep} ${oy + N * dy_dep} `;
+  for (let j = 1; j <= N; j++) {
+    const sx = ox + j * dx_dep, sy = oy + j * dy_dep;
+    d += `L ${sx + N * cellW} ${sy} M ${sx} ${sy} `;
+  }
+  floorPath.setAttribute('d', d);
+  floorPath.setAttribute('fill', 'none');
+  floorPath.setAttribute('stroke', '#3a3858');
+  floorPath.setAttribute('stroke-width', '0.6');
+  svg.appendChild(floorPath);
+
+  // draw bars: paint back rows first, then front. eigenvalues axis is depth.
+  // each bar: footprint at (i,j) [state i, eigen j], height h proportional to P.
+  for (let j = N - 1; j >= 0; j--) {         // back-to-front
+    for (let i = 0; i < N; i++) {            // left-to-right
+      const v = perEigenFactors[j] ? perEigenFactors[j][i] : 0;
+      if (v < 0.005) continue;
+      const h = (v / pmax) * heightUnit;
+      const fillNorm = v / pmax;
+      const fillCol = colormap(fillNorm);
+      const sideCol = darken(fillCol, 0.75);
+      const backCol = darken(fillCol, 0.55);
+      // Footprint corners (front-left, front-right, back-right, back-left)
+      const flX = ox + i * cellW + 3,                 flY = oy + j * dy_dep + j * 0;
+      const frX = flX + cellW - 6,                    frY = flY;
+      const brX = frX + dx_dep * 0.85,                brY = flY + dy_dep * 0.85;
+      const blX = flX + dx_dep * 0.85,                blY = flY + dy_dep * 0.85;
+      // top corners (height = h up the screen)
+      const topFL = [flX, flY + j * (-0) - h * 0 + (dy_dep * j) * 0]; // placeholder
+      const flTopY = flY + (j * 0) - h;
+      const frTopY = frY - h;
+      const brTopY = brY - h;
+      const blTopY = blY - h;
+      // shift bars by depth row offset (already in flY via dy_dep*j? no — they're at oy*level)
+      // RE-DO: simpler. front-left = (ox + i*cellW + 3 + j*dx_dep, oy + j*dy_dep). All four
+      // footprint corners and four top corners follow.
+      const FL = [ox + i * cellW + 4 + j * dx_dep, oy + j * dy_dep];
+      const FR = [FL[0] + cellW - 8,               FL[1]];
+      const BR = [FR[0] + dx_dep * 0.85,           FR[1] + dy_dep * 0.85];
+      const BL = [FL[0] + dx_dep * 0.85,           FL[1] + dy_dep * 0.85];
+      const tFL = [FL[0], FL[1] - h];
+      const tFR = [FR[0], FR[1] - h];
+      const tBR = [BR[0], BR[1] - h];
+      const tBL = [BL[0], BL[1] - h];
+      // back face (drawn first under top/right)
+      addPolygon(svg, svgNS, [BL, BR, tBR, tBL], backCol, 0.6);
+      // right side
+      addPolygon(svg, svgNS, [FR, BR, tBR, tFR], sideCol, 0.7);
+      // front face
+      addPolygon(svg, svgNS, [FL, FR, tFR, tFL], fillCol, 0.9);
+      // top
+      addPolygon(svg, svgNS, [tFL, tFR, tBR, tBL], colormap(Math.min(1, fillNorm + 0.05)), 1);
+    }
+  }
+
+  // x-axis labels (states), placed below front edge
+  for (let i = 0; i < N; i++) {
+    const x = ox + i * cellW + cellW / 2;
+    const y = oy + 18;
+    const t = svgText(svgNS, x, y, stateLabels[i], 'middle', '#cdd2db', 11);
+    svg.appendChild(t);
+  }
+  // y-axis labels (eigenvalues), placed at right end of each depth row
+  for (let j = 0; j < N; j++) {
+    const sx = ox + N * cellW + j * dx_dep + 10;
+    const sy = oy + j * dy_dep + 4;
+    const label = `λ${j + 1}`;
+    svg.appendChild(svgText(svgNS, sx, sy, label, 'start', '#cdd2db', 11));
+  }
+  // z-axis ticks (P value)
+  for (let frac of [0, 0.2, 0.4, 0.6, 0.8, 1]) {
+    const tickY = oy - frac * heightUnit;
+    svg.appendChild(svgText(svgNS, ox - 6, tickY + 4, (frac * pmax).toFixed(2), 'end', '#aeb4c2', 10));
+    const line = document.createElementNS(svgNS, 'line');
+    line.setAttribute('x1', ox - 2); line.setAttribute('y1', tickY);
+    line.setAttribute('x2', ox); line.setAttribute('y2', tickY);
+    line.setAttribute('stroke', '#aeb4c2'); line.setAttribute('stroke-width', '0.6');
+    svg.appendChild(line);
+  }
+  // axis labels
+  svg.appendChild(svgText(svgNS, ox - 40, oy - heightUnit / 2, 'P', 'middle', '#e3e6ee', 14));
+  svg.appendChild(svgText(svgNS, ox + N * cellW / 2, oy + 38, 'State variables', 'middle', '#e3e6ee', 12));
+
+  card.appendChild(svg);
+  return card;
+}
+
+function addPolygon(svg, ns, pts, fill, alpha) {
+  const p = document.createElementNS(ns, 'polygon');
+  p.setAttribute('points', pts.map(c => `${c[0].toFixed(1)},${c[1].toFixed(1)}`).join(' '));
+  p.setAttribute('fill', fill);
+  p.setAttribute('fill-opacity', alpha);
+  p.setAttribute('stroke', '#1c1a30');
+  p.setAttribute('stroke-width', '0.4');
+  svg.appendChild(p);
+}
+function darken(rgb, factor) {
+  const m = rgb.match(/(\d+),\s*(\d+),\s*(\d+)/);
+  if (!m) return rgb;
+  return `rgb(${Math.round(+m[1] * factor)},${Math.round(+m[2] * factor)},${Math.round(+m[3] * factor)})`;
+}
+
 function mapChart(map, xLabel, yLabel) {
   const sx = [], sy = [], ux = [], uy = [];
   for (let iy = 0; iy < map.yVals.length; iy++)
