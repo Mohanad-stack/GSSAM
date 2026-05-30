@@ -301,7 +301,7 @@ function axis({ min, max, points = 30, log = false }) {
  */
 export function criticalValue(topology, baseParams, paramId, range, opts = {}) {
   const { min, max } = range;
-  const slowOnly = opts.slowOnly !== false;   // default: track slow mode (the engineering Hopf)
+  const slowOnly = opts.slowOnly !== false;
   const fs = baseParams.fs || 40e3;
   const slowCutoff = 2 * Math.PI * 0.3 * fs;
 
@@ -313,12 +313,33 @@ export function criticalValue(topology, baseParams, paramId, range, opts = {}) {
       return slow.length ? Math.max(...slow.map(e => e.re)) : -Infinity;
     } catch { return NaN; }
   };
-  let lo = min, hi = max;
-  let flo = reAt(lo), fhi = reAt(hi);
-  if (!(flo < 0 && fhi > 0)) {
-    if (flo > 0 && fhi < 0) { [lo, hi] = [hi, lo]; [flo, fhi] = [fhi, flo]; }
-    else return null;
+
+  // STEP 1 — Pre-scan log-spaced points to find the LOWEST sign change.
+  // Bisection on the full [min,max] interval would just find any crossing
+  // (and converge to whichever side the midpoint happens to be on); for
+  // matrices with multiple instability regions we want the smallest |param|
+  // where stability is first lost.
+  const SCAN = 60;
+  const useLog = min > 0 && max / min > 30;
+  const samples = [];
+  for (let i = 0; i < SCAN; i++) {
+    const frac = i / (SCAN - 1);
+    const v = useLog
+      ? Math.pow(10, Math.log10(min) + frac * (Math.log10(max) - Math.log10(min)))
+      : min + frac * (max - min);
+    samples.push({ v, f: reAt(v) });
   }
+  // Find the first sign change in either direction.
+  let bracket = null;
+  for (let i = 1; i < SCAN; i++) {
+    const a = samples[i - 1].f, b = samples[i].f;
+    if (a < 0 && b > 0) { bracket = { lo: samples[i - 1].v, hi: samples[i].v, flo: a, fhi: b }; break; }
+    if (a > 0 && b < 0) { bracket = { lo: samples[i].v, hi: samples[i - 1].v, flo: b, fhi: a }; break; }
+  }
+  if (!bracket) return null;
+
+  // STEP 2 — Bisect inside the bracket.
+  let { lo, hi, flo, fhi } = bracket;
   for (let i = 0; i < 22; i++) {
     const mid = 0.5 * (lo + hi);
     const fm = reAt(mid);
@@ -326,7 +347,6 @@ export function criticalValue(topology, baseParams, paramId, range, opts = {}) {
     if (Math.abs(hi - lo) < 1e-4 * (Math.abs(hi) + 1e-9)) break;
   }
   const crit = 0.5 * (lo + hi);
-  // frequency of the crossing mode (use the slow mode if requested)
   const eigs = eigenvalues(getJacobian(topology, { ...baseParams, [paramId]: crit })).eigenvalues;
   const pool = slowOnly ? eigs.filter(e => Math.abs(e.im) < slowCutoff) : eigs;
   const dom = (pool.length ? pool : eigs).reduce((a, b) => b.re > a.re ? b : a);
@@ -350,6 +370,39 @@ export function criticalScaling(topology, baseParams, effectId, effectRange, ki1
     product.push(k * v);
   }
   return { values: vals, critKi1, product };
+}
+
+/**
+ * Report-style stability boundary family (Figures 5 / 6 of the Buck Stability
+ * Report). For each value of `familyId` (L or C), compute BOTH critical Ki1
+ * (sweeping up from nominal) and critical Kp2 (sweeping down from nominal).
+ * The result is two curves on a shared family-parameter axis, showing how the
+ * inductor (or capacitor) reshapes both stability boundaries simultaneously.
+ *
+ * @returns {{
+ *   values:number[],         // family parameter values (L or C)
+ *   critKi1:number[],        // Ki1_critical at each value
+ *   critKp2:number[],        // Kp2_critical at each value
+ *   ki1Type:string[],        // 'Hopf' | 'real' | '' per point
+ *   kp2Type:string[],
+ * }}
+ */
+export function boundaryFamily(topology, baseParams, familyId, familyRange) {
+  const vals = axis(familyRange);
+  const critKi1 = [], critKp2 = [], ki1Type = [], kp2Type = [];
+  const ki1Nom = baseParams.Ki1, kp2Nom = baseParams.Kp2;
+  for (const v of vals) {
+    const bp = { ...baseParams, [familyId]: v };
+    // Ki1 critical: scan upward from nominal. Wide enough log range to bracket.
+    const ck = criticalValue(topology, bp, 'Ki1', { min: ki1Nom * 0.5, max: ki1Nom * 1000 }, { slowOnly: false });
+    critKi1.push(ck ? ck.value : NaN);
+    ki1Type.push(ck ? ck.type : '');
+    // Kp2 critical: scan downward from nominal.
+    const cp = criticalValue(topology, bp, 'Kp2', { min: kp2Nom * 0.001, max: kp2Nom * 1.2 }, { slowOnly: true });
+    critKp2.push(cp ? cp.value : NaN);
+    kp2Type.push(cp ? cp.type : '');
+  }
+  return { values: vals, critKi1, critKp2, ki1Type, kp2Type };
 }
 
 /**

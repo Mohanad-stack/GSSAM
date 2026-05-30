@@ -7,7 +7,7 @@
  *   2. Bifurcation diagram (vo steady-state vs parameter)
  *   3. Participation factors of the dominant mode (DC / ripple / controller)
  *   4. 2D stability map over two parameters
- * Plus: Bode magnitude + phase at the nominal point.
+ * Plus: Eigenvalue table; L/C boundary families and design surface (on-demand).
  */
 
 import { renderTopologyPicker } from '../ui/topology-picker.js';
@@ -16,7 +16,7 @@ import { buildABCD } from '../core/abcd.js';
 import { eigenvalues, frequencyResponse } from '../core/analysis.js';
 import {
   getJacobian, sweepParameter, bifurcationDiagram, modeParticipation, stabilityMap2D,
-  criticalValue, criticalScaling, designSurface, eigenvalueTable, lcResonanceHz,
+  criticalValue, criticalScaling, boundaryFamily, designSurface, eigenvalueTable, lcResonanceHz,
 } from '../core/stability.js';
 import { createChart, fmtNum } from '../ui/chart.js';
 
@@ -261,13 +261,6 @@ function renderAnalysis(root, topology, p, paramId, range, res = 'med') {
   const map = stabilityMap2D(topology, p, xSpec, ySpec);
   root.appendChild(plotCard(`Stability region: ${paramLabel} vs ${secLabel}`, mapChart(map, paramLabel, secLabel)));
 
-  root.appendChild(h('Frequency response (Bode)'));
-  root.appendChild(stepText('Closed-loop response from reference to output, at the nominal operating point.'));
-  const { A, B } = buildABCD(topology, p);
-  const fr = frequencyResponse(A, B, { outputIdx: 1, wMin: 1, wMax: 2 * Math.PI * p.fs * 2, points: 300 });
-  root.appendChild(plotCard('Bode magnitude', bodeMagChart(fr)));
-  root.appendChild(plotCard('Bode phase', bodePhaseChart(fr)));
-
   // ---- Eigenvalue table (paper Tables 2/3) ----
   root.appendChild(h('Eigenvalue table'));
   root.appendChild(stepText(
@@ -300,27 +293,46 @@ function renderDesignStudy(root, topology, p, res = 'med') {
   root.replaceChildren();
   const lc = lcResonanceHz(p);
 
-  // Resolution -> point counts. Higher = smoother curves, slower bisection.
+  // Point counts driven by resolution. Each point bisects twice (Ki1 + Kp2),
+  // each bisection scans 60 + bisects 22, so cost scales roughly as 2 * points.
   const RES = {
-    low:  { lc: 9,  surfX: 10, surfY: 8 },
-    med:  { lc: 15, surfX: 14, surfY: 12 },
-    high: { lc: 25, surfX: 22, surfY: 18 },
-  }[res] || { lc: 15, surfX: 14, surfY: 12 };
+    low:  { fam: 9,  surfX: 10, surfY: 8 },
+    med:  { fam: 15, surfX: 14, surfY: 12 },
+    high: { fam: 25, surfX: 22, surfY: 18 },
+  }[res] || { fam: 15, surfX: 14, surfY: 12 };
 
-  const Lstudy = criticalScaling(topology, p, 'L', { min: p.L * 0.25, max: p.L * 4, points: RES.lc }, { min: 50, max: 200000 });
-  root.appendChild(plotCard('Critical Ki1 vs L', critScaleChart(Lstudy, 'L (H)')));
-  root.appendChild(plotCard('Ki1_crit × L (≈ constant?)', critProductChart(Lstudy, 'L (H)')));
-
-  const Cstudy = criticalScaling(topology, p, 'C', { min: p.C * 0.33, max: p.C * 3, points: RES.lc }, { min: 50, max: 200000 });
-  root.appendChild(plotCard('Critical Ki1 vs C (weak effect)', critScaleChart(Cstudy, 'C (F)')));
-
-  const Lspread = ratioSpread(Lstudy.critKi1);
-  const Cspread = ratioSpread(Cstudy.critKi1);
+  // ---- Figure 5 — L-family stability boundaries (Ki1_crit & Kp2_crit vs L)
+  root.appendChild(h('L-family stability boundaries'));
   root.appendChild(stepText(
-    `Design-knob leverage: over the swept ranges, L changes Ki1_crit by ${Lspread.toFixed(1)}×, ` +
-    `C by only ${Cspread.toFixed(1)}×. LC resonance ≈ ${lc.toFixed(0)} Hz. ` +
-    `→ L is the dominant stability knob; minimise L within ripple limits for headroom.`));
+    'For each value of L, find Ki1_crit (sweeping Ki1 upward) and Kp2_crit ' +
+    '(sweeping Kp2 downward). Both boundaries are plotted on the same L axis. ' +
+    'Smaller L generally yields more headroom on both gain bounds.'));
+  const Lfam = boundaryFamily(topology, p, 'L', { min: p.L * 0.2, max: p.L * 2.0, points: RES.fam });
+  root.appendChild(plotCard('Ki1_critical vs L', familyChart(Lfam, 'L (H)', 'Ki1_critical', 'critKi1', '#c0392b')));
+  root.appendChild(plotCard('Kp2_critical vs L', familyChart(Lfam, 'L (H)', 'Kp2_critical', 'critKp2', '#8e44ad')));
 
+  // ---- Figure 6 — C-family stability boundaries
+  root.appendChild(h('C-family stability boundaries'));
+  root.appendChild(stepText(
+    'Same idea, sweeping C. The report finds Ki1_crit is nearly insensitive to ' +
+    'C (the outer-loop bifurcation is set mainly by L), while Kp2_crit varies ' +
+    'strongly (the inner-loop bifurcation is set by C).'));
+  const Cfam = boundaryFamily(topology, p, 'C', { min: p.C * 0.2, max: p.C * 4.0, points: RES.fam });
+  root.appendChild(plotCard('Ki1_critical vs C', familyChart(Cfam, 'C (F)', 'Ki1_critical', 'critKi1', '#c0392b')));
+  root.appendChild(plotCard('Kp2_critical vs C', familyChart(Cfam, 'C (F)', 'Kp2_critical', 'critKp2', '#8e44ad')));
+
+  // ---- Summary leverage line
+  const Lki1Spread = ratioSpread(Lfam.critKi1);
+  const Lkp2Spread = ratioSpread(Lfam.critKp2);
+  const Cki1Spread = ratioSpread(Cfam.critKi1);
+  const Ckp2Spread = ratioSpread(Cfam.critKp2);
+  root.appendChild(stepText(
+    `Design-knob leverage over the swept ranges: ` +
+    `L moves Ki1_crit by ${Lki1Spread.toFixed(1)}× and Kp2_crit by ${Lkp2Spread.toFixed(1)}×; ` +
+    `C moves Ki1_crit by ${Cki1Spread.toFixed(1)}× and Kp2_crit by ${Ckp2Spread.toFixed(1)}×. ` +
+    `LC resonance ≈ ${lc.toFixed(0)} Hz.`));
+
+  // ---- Figure 9 — Design surface Ki1_crit(L, Kp1)
   root.appendChild(h('Design surface — Ki1_crit(L, Kp1)'));
   root.appendChild(stepText('Engineer\u2019s lookup chart: maximum stable Ki1 for each (L, Kp1). Brighter = more headroom.'));
   const surf = designSurface(topology, p,
@@ -328,6 +340,17 @@ function renderDesignStudy(root, topology, p, res = 'med') {
     { id: 'Kp1', min: p.Kp1 * 0.3, max: p.Kp1 * 3, points: RES.surfY },
     { min: 50, max: 200000 });
   root.appendChild(plotCard('Ki1_crit lookup (L horizontal, Kp1 vertical)', surfaceCard(surf, 'L (H)', 'Kp1')));
+}
+
+/** Family-style chart for the design study (report Figures 5/6 analogue). */
+function familyChart(fam, xLabel, yLabelTitle, ySeriesKey, color) {
+  return createChart({
+    series: [
+      { x: fam.values, y: fam[ySeriesKey], color, width: 1.8, label: yLabelTitle,
+        marker: 'circle', markerSize: 4 },
+    ],
+    xLabel, yLabel: yLabelTitle,
+  });
 }
 
 /* ---------- chart builders ---------- */
@@ -371,60 +394,85 @@ const MODE_COLORS = [
   '#e67e22', '#16a085', '#d4ac0d', '#7f8c8d',
 ];
 
+/**
+ * Eigenvalue locus chart — spectrum-style.
+ *
+ * Plots every eigenvalue at every sweep step as a colored cross marker.
+ * The marker color is graded by the position in the sweep (cool blue at the
+ * start → warm red at the end), so the reader can SEE which direction the
+ * sweep traces. Overlay markers (green circles, red triangles, black squares)
+ * highlight nominal-start, sweep-end, and at-bifurcation points.
+ *
+ * This works equally well when modes move continuously (the gradient traces
+ * a path through the plane) and when modes are mostly stationary (clusters
+ * just darken in place).
+ */
 function locusChart(sw, bifValue, opts = {}) {
-  const tracks = buildEigenTracks(sw);
-  if (!tracks.length) return createChart({ series: [] });
-
-  // For the slow-region zoom, restrict each track to points whose |im| is below
-  // a slow-band threshold (e.g. 0.3 * fs in Hz). The track itself is unchanged;
-  // we just hand the chart a y-axis clip range so the fast modes fall off-plot.
+  if (!sw.eigs || !sw.eigs.length) return createChart({ series: [] });
   const fs = opts.fs || 40e3;
   const slowImLimit = 2 * Math.PI * 0.3 * fs;
 
-  // Build series: one line per eigenvalue trajectory + endpoint markers + bifurcation markers
+  // Color gradient: HSL hue from blue (start, ~210°) to red (end, ~0°)
+  const hueAt = (frac) => 210 - 210 * frac;          // 210 -> 0
+  const swColor = (frac) => `hsl(${hueAt(frac).toFixed(0)}, 70%, 45%)`;
+
+  // Build a separate single-point "series" per sweep step so each gets its
+  // own gradient color. This is a bit verbose but lets the existing chart
+  // engine do all the work without modification.
   const series = [];
-  for (let k = 0; k < tracks.length; k++) {
-    const tk = tracks[k];
-    const color = MODE_COLORS[k % MODE_COLORS.length];
-    // In slow mode, only include tracks that ever dip into the slow band
-    if (opts.slow && !tk.some(p => Math.abs(p.im) < slowImLimit)) continue;
+  const N = sw.values.length;
+  for (let i = 0; i < N; i++) {
+    const eigs = (sw.eigs[i] || []).filter(e => !opts.slow || Math.abs(e.im) < slowImLimit);
+    if (!eigs.length) continue;
+    const frac = N === 1 ? 0.5 : i / (N - 1);
     series.push({
-      x: tk.map(p => p.re), y: tk.map(p => p.im),
-      color, width: 1.4, label: `λ${k + 1}`,
+      x: eigs.map(e => e.re),
+      y: eigs.map(e => e.im),
+      color: swColor(frac),
+      marker: 'cross',
+      markerOnly: true,
+      // markersize stays default (5)
     });
   }
-  // start markers (green circles) and end markers (red triangles) for each track
-  const filteredTracks = opts.slow ? tracks.filter(t => t.some(p => Math.abs(p.im) < slowImLimit)) : tracks;
-  const startX = filteredTracks.map(t => t[0].re), startY = filteredTracks.map(t => t[0].im);
-  const endX = filteredTracks.map(t => t[t.length - 1].re), endY = filteredTracks.map(t => t[t.length - 1].im);
-  series.push({ x: startX, y: startY, color: '#27ae60', marker: 'circle', markerOnly: true, markerSize: 5, label: 'start (nominal)' });
-  series.push({ x: endX, y: endY, color: '#c0392b', marker: 'triangle', markerOnly: true, markerSize: 6, label: 'end of sweep' });
 
-  // bifurcation markers (black squares): the eigenvalues at the bifurcation value, if known
+  // Overlay: start (green circles), end (red triangles), bifurcation (black squares)
+  const filterE = (eigs) => opts.slow ? eigs.filter(e => Math.abs(e.im) < slowImLimit) : eigs;
+  const startEigs = filterE(sw.eigs[0] || []);
+  const endEigs   = filterE(sw.eigs[N - 1] || []);
+  series.push({
+    x: startEigs.map(e => e.re), y: startEigs.map(e => e.im),
+    color: '#27ae60', marker: 'circle', markerOnly: true, markerSize: 6,
+    label: 'start (nominal)',
+  });
+  series.push({
+    x: endEigs.map(e => e.re), y: endEigs.map(e => e.im),
+    color: '#c0392b', marker: 'triangle', markerOnly: true, markerSize: 7,
+    label: 'end of sweep',
+  });
   if (bifValue != null && Number.isFinite(bifValue)) {
     let bi = 0, bd = Infinity;
     for (let i = 0; i < sw.values.length; i++) {
       const d = Math.abs(sw.values[i] - bifValue);
       if (d < bd) { bd = d; bi = i; }
     }
-    const bifEigs = (sw.eigs[bi] || []).filter(e => !opts.slow || Math.abs(e.im) < slowImLimit);
+    const bifEigs = filterE(sw.eigs[bi] || []);
     series.push({
       x: bifEigs.map(e => e.re), y: bifEigs.map(e => e.im),
-      color: '#1e1e1c', marker: 'square', markerOnly: true, markerSize: 5,
+      color: '#1e1e1c', marker: 'square', markerOnly: true, markerSize: 6,
       label: 'at bifurcation',
     });
   }
 
-  // Re=0 axis as dashed reference
-  let allIm;
-  if (opts.slow) {
-    allIm = filteredTracks.flatMap(t => t.filter(p => Math.abs(p.im) < slowImLimit).map(p => p.im));
-  } else {
-    allIm = tracks.flatMap(t => t.map(p => p.im));
+  // Re=0 reference line (the imaginary axis)
+  const allIm = [];
+  for (const eigs of sw.eigs) for (const e of eigs) {
+    if (!opts.slow || Math.abs(e.im) < slowImLimit) allIm.push(e.im);
   }
-  if (!allIm.length) allIm = [-1, 1];
-  const imMin = Math.min(...allIm), imMax = Math.max(...allIm);
-  series.push({ x: [0, 0], y: [imMin, imMax], color: '#c0392b', width: 1, dash: '5,4', label: 'Re = 0' });
+  if (!allIm.length) allIm.push(-1, 1);
+  series.push({
+    x: [0, 0], y: [Math.min(...allIm), Math.max(...allIm)],
+    color: '#c0392b', width: 1, dash: '5,4', label: 'Re = 0',
+  });
 
   return createChart({
     series,
@@ -582,11 +630,17 @@ function participation3DCard(perEigenFactors, eigs, stateLabels) {
     const x = ox + i * cellW + cellW / 2;
     svg.appendChild(svgText(svgNS, x, oy + 18, stateLabels[i], 'middle', '#cdd2db', 11));
   }
-  // depth-axis labels (mode frequency) at the right edge of each row
+  // depth-axis labels (mode frequency) at the right edge of each row.
+  // Deduplicate: when two adjacent depth rows have the same label (e.g. a
+  // conjugate ripple pair), show it only on the first.
+  let lastLabel = null;
   for (let j = 0; j < N; j++) {
-    const sx = ox + N * cellW + j * dx_dep + 10;
+    const lbl = modeLabel(j);
+    if (lbl === lastLabel) continue;
+    const sx = ox + N * cellW + j * dx_dep + 12;
     const sy = oy + j * dy_dep + 4;
-    svg.appendChild(svgText(svgNS, sx, sy, modeLabel(j), 'start', '#cdd2db', 11));
+    svg.appendChild(svgText(svgNS, sx, sy, lbl, 'start', '#cdd2db', 11));
+    lastLabel = lbl;
   }
   // z-axis (P) ticks
   for (const frac of [0, 0.2, 0.4, 0.6, 0.8, 1]) {
@@ -598,11 +652,12 @@ function participation3DCard(perEigenFactors, eigs, stateLabels) {
     ln.setAttribute('stroke', '#aeb4c2'); ln.setAttribute('stroke-width', '0.6');
     svg.appendChild(ln);
   }
-  // axis titles
+  // axis titles. Mode axis title goes ABOVE the frequency labels (back-row area)
+  // so it doesn't overlap them.
   svg.appendChild(svgText(svgNS, ox - 40, oy - heightUnit / 2, 'P', 'middle', '#e3e6ee', 14));
   svg.appendChild(svgText(svgNS, ox + N * cellW / 2, oy + 38, 'State variables', 'middle', '#e3e6ee', 12));
-  svg.appendChild(svgText(svgNS, ox + N * cellW + N * dx_dep / 2 + 30, oy + N * dy_dep / 2 - 6,
-                          'Mode (frequency)', 'start', '#e3e6ee', 12));
+  svg.appendChild(svgText(svgNS, ox + N * cellW + N * dx_dep + 28, oy + N * dy_dep - 20,
+                          'Mode', 'start', '#e3e6ee', 12));
 
   card.appendChild(svg);
   return card;
