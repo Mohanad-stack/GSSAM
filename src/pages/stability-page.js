@@ -1,8 +1,8 @@
 /**
  * Stability analysis page — Zhang et al. methodology in the browser.
  *
- * Uses the TRUE closed-loop Jacobian (src/core/stability.js), which differs
- * from the simulation matrix used by the Linearized/Nonlinear tabs. Steps:
+ * Uses the verified linearized A matrix from buildAB (the same matrix the
+ * Linearized tab displays). Steps:
  *   1. Eigenvalue locus + max(real) vs swept parameter -> bifurcation point
  *   2. Bifurcation diagram (vo steady-state vs parameter)
  *   3. Participation factors of the dominant mode (DC / ripple / controller)
@@ -37,9 +37,9 @@ export function renderStabilityPage(mount, store) {
   const blurb = document.createElement('p');
   blurb.className = 'page-blurb hint';
   blurb.textContent =
-    'Eigenvalue / bifurcation analysis on the true closed-loop Jacobian (Zhang et al. method). ' +
-    'This matrix differs from the simulation matrix on the other tabs — it couples the controller ' +
-    'back into the plant, which is what lets a parameter sweep reveal a Hopf bifurcation.';
+    'Eigenvalue / bifurcation analysis on the verified linearized closed-loop A matrix ' +
+    '(the same one the Linearized tab displays). Sweeping a parameter and tracking the ' +
+    'eigenvalues reveals where the design loses stability.';
   intro.appendChild(blurb);
   mount.appendChild(intro);
 

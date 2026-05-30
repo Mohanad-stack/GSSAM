@@ -32,12 +32,15 @@ python -m http.server 8000
 
 Classical state-space averaging keeps only the DC component and loses the switching ripple. GSSAM keeps the index-0 (average) **and** index-+/-1 (first harmonic) terms, so the model reproduces both the low-frequency dynamics *and* the ripple. That extra structure is what lets the stability tab predict oscillation onset (Hopf bifurcations) that the textbook averaged model cannot see.
 
-## Two matrices, two purposes
+## One verified matrix, everywhere
 
-A subtle but important point that the code makes explicit:
-
-- The **simulation matrix** (`buildAB`) is the frozen-duty "Ax + B(x)" form. It matches the Simulink linearized block and is used by the Linearized and Nonlinear tabs. It is structurally open-loop, so it cannot bifurcate.
-- The **closed-loop Jacobian** (`getJacobian`) is the linearization of the nonlinear GSSAM about its equilibrium, with the controller coupled back into the plant. This is what the Stability tab uses, and it is what produces the Hopf bifurcation. For the Buck it is available analytically; for the others it is computed by finite differences and verified to match.
+The Linearized tab, the Nonlinear-tab comparison plot, the Stability tab, and the
+Design-tab stability verdict all share **one** A matrix: `buildAB(topology, params).A`,
+the closed-loop linearization verified entry-by-entry against the MATLAB scripts. The
+controller feedback is already part of A (it enters the DC inductor row, and for
+Boost/Buck-Boost the DC capacitor row), so the loop is closed and the matrix can
+exhibit Hopf and real bifurcations under parameter sweeps. One source of truth, no
+"which matrix is this" footnotes.
 
 ## Repo layout
 

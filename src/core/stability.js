@@ -1,16 +1,15 @@
 /**
- * Stability-analysis engine (Zhang et al. methodology).
+ * Stability-analysis engine.
  *
- * IMPORTANT: stability uses the TRUE closed-loop Jacobian dF/dX, NOT the
- * frozen-d simulation matrix from buildAB. In buildAB the controller feedback
- * is pushed into B, so the loop is structurally open and the poles cannot move
- * with the gains. The Jacobian couples the controller back into the plant rows,
- * which is what produces the Hopf bifurcation. A converter may provide an
- * analytic jacobian(p, op); otherwise we numerically differentiate
- * gssamNonlinear at the settled equilibrium (verified to match the analytic
- * buck Jacobian to numerical precision).
+ * As of the model update, this engine uses the SAME verified linearized A
+ * matrix as the Linearized tab — `buildAB(topology, params).A`. That matrix
+ * is the closed-loop linearization at the operating point (control feedback
+ * already in A), verified against the MATLAB scripts entry-by-entry. So
+ * eigenvalues, parameter sweeps, bifurcation detection, participation
+ * factors, and the L/C design study all flow from one source of truth.
  */
 
+import { buildABCD } from './abcd.js';
 import { eigenvalues, participationFactors } from './analysis.js';
 
 const STATE_LABELS = ['iL₀', 'vo₀', 'iLR', 'iLI', 'voR', 'voI', 'ξv', 'ξi'];
@@ -20,64 +19,9 @@ const STATE_GROUPS = {
   Controller: [6, 7],
 };
 
-/** Closed-loop Jacobian at parameters p (analytic if available, else numeric). */
+/** Closed-loop A at parameters p — the verified linearized matrix. */
 export function getJacobian(topology, p) {
-  if (typeof topology.jacobian === 'function' && typeof topology.operatingPoint === 'function') {
-    return topology.jacobian(p, topology.operatingPoint(p));
-  }
-  // numeric fallback: find the equilibrium (Newton — works even if unstable),
-  // then finite-difference gssamNonlinear there.
-  const xeq = findEquilibrium(topology, p);
-  return numericJacobian((x) => topology.gssamNonlinear(x, p), xeq);
-}
-
-/**
- * Find the equilibrium f(x)=0 of the nonlinear GSSAM by Newton's method.
- * Unlike time-settling, Newton converges to the fixed point even when it is
- * unstable (e.g. past a Hopf bifurcation), so the Jacobian there is the true
- * linearization about the operating point — not a limit-cycle snapshot.
- * Seeded from a short time-settle for a good initial guess.
- */
-export function findEquilibrium(topology, p) {
-  const f = (x) => topology.gssamNonlinear(x, p);
-  let x = settleEquilibrium(topology, p, 0.01); // rough seed
-  for (let iter = 0; iter < 30; iter++) {
-    const fx = f(x);
-    const norm = Math.max(...fx.map(Math.abs));
-    if (norm < 1e-9) break;
-    const J = numericJacobian(f, x);
-    // solve J dx = -fx
-    const dx = gaussSolveLocal(J, fx.map(v => -v));
-    let step = 1;
-    // damped Newton: don't overshoot
-    for (let k = 0; k < x.length; k++) x[k] += step * dx[k];
-  }
-  return x;
-}
-
-// local Gaussian solve (J dx = b)
-function gaussSolveLocal(Jin, bin) {
-  const n = bin.length;
-  const M = Jin.map(r => r.slice());
-  const b = bin.slice();
-  for (let col = 0; col < n; col++) {
-    let piv = col;
-    for (let r = col + 1; r < n; r++) if (Math.abs(M[r][col]) > Math.abs(M[piv][col])) piv = r;
-    if (piv !== col) { [M[col], M[piv]] = [M[piv], M[col]]; [b[col], b[piv]] = [b[piv], b[col]]; }
-    const d = M[col][col] || 1e-300;
-    for (let r = col + 1; r < n; r++) {
-      const fac = M[r][col] / d;
-      for (let c = col; c < n; c++) M[r][c] -= fac * M[col][c];
-      b[r] -= fac * b[col];
-    }
-  }
-  const x = new Array(n).fill(0);
-  for (let r = n - 1; r >= 0; r--) {
-    let s = b[r];
-    for (let c = r + 1; c < n; c++) s -= M[r][c] * x[c];
-    x[r] = s / (M[r][r] || 1e-300);
-  }
-  return x;
+  return buildABCD(topology, p, { autotuneIfMissing: false }).A;
 }
 
 /** Integrate the nonlinear GSSAM to its steady state (equilibrium point). */

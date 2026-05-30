@@ -34,20 +34,13 @@ into numeric A, B, C, D and never knows which converter it is building. Adding a
 topology (SEPIC, Cuk, ...) means writing **one new descriptor file**; the engine, UI,
 pages, plots, and export work unchanged.
 
-## Two matrices, two purposes
+## One verified matrix
 
-This is the most important conceptual point in the codebase:
-
-- **`buildAB`** is the frozen-duty "Ax + B(x)" simulation matrix. The duty dependence
-  lives in B, so the control loop is structurally open. It matches the Simulink
-  linearized block and drives the Linearized and Nonlinear tabs. It **cannot** exhibit
-  a bifurcation.
-- **`getJacobian`** (in `src/core/stability.js`) is the linearization of
-  `gssamNonlinear` about its equilibrium, with the controller coupled back into the
-  plant rows. This is the matrix the Stability tab analyzes, and the one that produces
-  the Hopf bifurcation. Analytic for Buck; numeric (finite-difference at a Newton-found
-  equilibrium) for Boost / Buck-Boost, verified to match the analytic Buck to numerical
-  precision.
+There is one A matrix in the codebase: `buildAB(topology, params).A`, the closed-loop
+linearization at the operating point. It is verified entry-by-entry against the MATLAB
+scripts (`tests/`). The Linearized tab uses it for simulation and display; the Stability
+tab feeds it into the sweep / bifurcation / participation engine; the Design tab uses it
+to report a stability verdict for designed components. One source of truth.
 
 ## Pages and the shared store
 

@@ -77,30 +77,6 @@ export const buck = {
     return { A, B };
   },
 
-  // --- 3b. True closed-loop Jacobian (for STABILITY analysis) -----------
-  // Unlike buildAB (the frozen-d simulation matrix, where the duty dependence
-  // lives in B), this is the full Jacobian dF/dX of the closed-loop dynamics:
-  // the controller feedback couples back into the plant rows (1,3,4) through
-  // d = vcon/Vm. Only this matrix can exhibit the Hopf bifurcation, because in
-  // buildAB the loop is structurally open. Derived in docs/MATH.md.
-  //   g = Vin/(L*Vm),  cd = cos(2*pi*d_ss),  sd = sin(2*pi*d_ss)
-  jacobian(p, op) {
-    const { Vin, L, C, R, Vm = 1, Kp1, Ki1, Kp2, Ki2 } = p;
-    const w = 2 * Math.PI * p.fs;
-    const { d_ss } = op;
-    const cd = Math.cos(2 * Math.PI * d_ss), sd = Math.sin(2 * Math.PI * d_ss);
-    const g = Vin / (L * Vm);
-    return [
-      [ -Kp2 * g,      -1 / L - Kp1 * Kp2 * g, 0,     0,      0,            0,           Ki1 * Kp2 * g,      Ki2 * g ],
-      [ 1 / C,         -1 / (R * C),           0,     0,      0,            0,           0,                  0 ],
-      [ -Kp2 * cd * g, -Kp1 * Kp2 * cd * g,    0,     w,     -1 / L,        0,           Ki1 * Kp2 * cd * g, Ki2 * cd * g ],
-      [ Kp2 * sd * g,  Kp1 * Kp2 * sd * g,    -w,     0,      0,           -1 / L,      -Ki1 * Kp2 * sd * g, -Ki2 * sd * g ],
-      [ 0,             0,                      1 / C, 0,     -1 / (R * C),  w,           0,                  0 ],
-      [ 0,             0,                      0,     1 / C, -w,           -1 / (R * C), 0,                  0 ],
-      [ 0,            -1,                      0,     0,      0,            0,           0,                  0 ],
-      [ -1,           -Kp1,                    0,     0,      0,            0,           Ki1,                0 ],
-    ];
-  },
   // Plant-based crossover design (adopted standard: N_inner = 10).
   // Inner current-loop plant  G_id = Vin/(sL); outer voltage-loop plant
   // G_vi = R/(1+sRC). PI zero placed a decade below crossover.

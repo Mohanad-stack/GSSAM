@@ -143,27 +143,13 @@ For the Buck the inductor sees `<s>*Vin`; for the Boost and Buck-Boost the
 The model is integrated with RK4. It has been checked against the Simulink Figure-2
 behavior (steady-state ripple bounds and startup) for all three converters.
 
-## Closed-loop Jacobian (for stability)
+## Stability uses the verified linearized A
 
-The Stability tab does **not** use `buildAB`. It linearizes `gssamNonlinear` about its
-equilibrium, giving the true closed-loop Jacobian dF/dX in which the controller couples
-back into the plant. For the Buck this is available in closed form:
-
-```
-g  = Vin / (L * Vm)
-cd = cos(2*pi*d_ss),  sd = sin(2*pi*d_ss)
-
-Row 1 (iL0): [ -Kp2*g, -1/L - Kp1*Kp2*g, 0, 0, 0, 0,  Ki1*Kp2*g,  Ki2*g ]
-Row 3 (iLR): Row-1 control terms * cd, plus the harmonic coupling (+w, -1/L)
-Row 4 (iLI): Row-1 control terms * (-sd), plus (-w, -1/L)
-Row 8 (ei) : [ -1, -Kp1, 0, 0, 0, 0, Ki1, 0 ]
-```
-
-The Boost and Buck-Boost Jacobians are obtained by finite-differencing
-`gssamNonlinear` at the equilibrium; this was verified to match the analytic Buck
-Jacobian to numerical precision. The equilibrium itself is found by Newton's method so
-it remains valid even past a bifurcation (where time-settling would land on a limit
-cycle, not the fixed point).
+The Stability tab uses the **same A matrix as the Linearized tab** —
+`buildAB(topology, params).A` — the closed-loop linearization verified against the
+MATLAB scripts. There is one source of truth: parameter sweeps, bifurcation
+detection, participation factors, and the L/C design study all compute eigenvalues
+of this matrix.
 
 ## Stability methodology (Zhang)
 
