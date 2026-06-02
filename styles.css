@@ -378,3 +378,59 @@ a { color: var(--accent); }
 .stab-bif-table tr:last-child td {
   border-bottom: none;
 }
+
+/* Collapsible sections in the Stability tab (details/summary) */
+details.stab-section {
+  margin: 1.5rem 0;
+  border: 1px solid #2a2742;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
+  overflow: hidden;
+}
+details.stab-section > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 0.9rem 1.1rem;
+  user-select: none;
+  background: rgba(43, 108, 176, 0.06);
+  font-size: 1.05rem;
+  color: #e3e6ee;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+details.stab-section > summary::-webkit-details-marker { display: none; }
+details.stab-section > summary::before {
+  content: '▸';
+  display: inline-block;
+  color: #8b7ff0;
+  font-size: 0.85rem;
+  width: 1rem;
+  transition: transform 0.15s ease;
+}
+details.stab-section[open] > summary::before {
+  transform: rotate(90deg);
+}
+details.stab-section > summary:hover {
+  background: rgba(43, 108, 176, 0.12);
+}
+details.stab-section > div {
+  padding: 0.8rem 1.1rem 1.1rem;
+}
+details.stab-section .hint {
+  font-weight: normal;
+  font-size: 0.9rem;
+  color: #aeb4c2;
+}
+
+/* Bifurcation boundary marker row in the eigenvalue table */
+.eig-boundary-row td {
+  text-align: center;
+  font-style: italic;
+  color: #e0a23b;
+  background: rgba(224, 162, 59, 0.08);
+  border-top: 1px dashed rgba(224, 162, 59, 0.5);
+  border-bottom: 1px dashed rgba(224, 162, 59, 0.5);
+  padding: 0.4rem 0.6rem;
+  font-size: 0.92rem;
+}

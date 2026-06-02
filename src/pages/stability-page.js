@@ -13,7 +13,7 @@
 import { renderTopologyPicker } from '../ui/topology-picker.js';
 import { renderParamForm } from '../ui/param-form.js';
 import { buildABCD } from '../core/abcd.js';
-import { eigenvalues, frequencyResponse } from '../core/analysis.js';
+import { eigenvalues } from '../core/analysis.js';
 import {
   getJacobian, sweepParameter, bifurcationDiagram, modeParticipation, stabilityMap2D,
   criticalValue, criticalScaling, boundaryFamily, stabilitySurface3D, designSurface, eigenvalueTable, lcResonanceHz,
@@ -191,103 +191,125 @@ function renderAnalysis(root, topology, p, paramId, range, res = 'med') {
   const J0 = getJacobian(topology, p);
   const { eigenvalues: eig0Raw, classification } = eigenvalues(J0);
   const eig0 = eig0Raw.filter(e => !e.spurious);
-  root.appendChild(banner(classification, eig0));
 
   const sw = sweepParameter(topology, p, paramId, { ...range, points: RES.sw });
+  const bifVal = sw.bifurcation ? sw.bifurcation.value : (sw.firstCrossing ? sw.firstCrossing.value : null);
 
-  // Headline summary — the one-glance "what's the critical parameter" card.
+  // ============================================================
+  // TIER 1 — VERDICT (always visible)
+  // The one-glance answer to "is my design safe and what's the margin?"
+  // ============================================================
+  root.appendChild(banner(classification, eig0));
   root.appendChild(bifurcationSummaryCard(paramLabel, paramId, p[paramId], sw));
 
-  root.appendChild(h('Step 1 — Eigenvalue locus & bifurcation'));
-  // Build a clearer status text using the new bifurcation + firstCrossing
-  let bifText = `Sweeping ${paramLabel} from ${fmtNum(range.min)} to ${fmtNum(range.max)}. `;
-  if (sw.bifurcation) {
-    const f = sw.bifurcation.freqHz;
-    bifText += `Slow-mode ${sw.bifurcation.type} bifurcation at ${paramLabel} = ${fmtNum(sw.bifurcation.value)}` +
-      (sw.bifurcation.type === 'Hopf' && f > 0 ? ` (≈ ${f.toFixed(0)} Hz)` : '') + '.';
-    if (sw.firstCrossing && sw.firstCrossing.value < sw.bifurcation.value) {
-      bifText += ` An additional crossing also appears at ${fmtNum(sw.firstCrossing.value)} (${sw.firstCrossing.type}).`;
-    }
-  } else if (sw.firstCrossing) {
-    bifText += `Crossing at ${paramLabel} = ${fmtNum(sw.firstCrossing.value)} (${sw.firstCrossing.type}, fast mode).`;
-  } else {
-    bifText += 'No bifurcation in this range — stable throughout.';
-  }
-  root.appendChild(stepText(bifText));
-  const bifVal = sw.bifurcation ? sw.bifurcation.value : (sw.firstCrossing ? sw.firstCrossing.value : null);
-  root.appendChild(plotCard('Eigenvalue locus (complex plane)', locusChart(sw, bifVal)));
-  // Zoomed-in view of the slow region (paper-style — focuses on modes near the imag axis)
-  root.appendChild(plotCard('Eigenvalue locus — slow region zoom',
-    locusChart(sw, bifVal, { slow: true, fs: p.fs })));
-  root.appendChild(plotCard(`Max real part vs ${paramLabel}`, maxRealChart(sw, paramLabel, range.log)));
-
-  root.appendChild(h('Step 2 — Bifurcation diagram'));
-  root.appendChild(stepText(
-    'Steady-state output voltage vs the swept parameter. A single line means one stable equilibrium; ' +
-    'a fanning-out band after the bifurcation is the Hopf limit cycle.'));
-  const bd = bifurcationDiagram(topology, p, paramId, { ...range, points: RES.bd });
-  root.appendChild(plotCard(`vo steady-state vs ${paramLabel}`, bifChart(bd, paramLabel, range.log)));
-
-  root.appendChild(h('Step 3 — Participation factors'));
+  // ============================================================
+  // TIER 2 — WHY THAT MODE? (always visible, key insight)
+  // What physically drives the bifurcation — voltage loop or current loop?
+  // ============================================================
+  root.appendChild(h('Why that mode? — participation factors'));
   const pPart = { ...p };
   if (sw.bifurcation) {
-    // Determine destabilizing direction: which side of the bifurcation has positive max-real?
     const idxNearBif = sw.values.findIndex(v => v >= sw.bifurcation.value);
     const goingUp = idxNearBif >= 0 && idxNearBif < sw.maxRealSlow.length - 1 &&
                     sw.maxRealSlow[idxNearBif + 1] > sw.maxRealSlow[Math.max(0, idxNearBif - 1)];
-    // step 5% past bifurcation in the destabilizing direction
     pPart[paramId] = sw.bifurcation.value * (goingUp ? 1.05 : 0.95);
   } else {
     pPart[paramId] = range.max;
   }
   const part = modeParticipation(topology, pPart);
-  const f = Math.abs(part.lambda.im) / (2 * Math.PI);
+  const fHz = Math.abs(part.lambda.im) / (2 * Math.PI);
   root.appendChild(stepText(
-    `Dominant slow mode at ${paramLabel} = ${fmtNum(pPart[paramId])}: ` +
-    `λ = ${part.lambda.re.toFixed(1)}${Math.abs(part.lambda.im) > 1 ? ` ± ${Math.abs(part.lambda.im).toFixed(1)}j (${f.toFixed(0)} Hz)` : ' (real)'}.  ` +
-    `Participation: DC ${(part.groups.DC * 100).toFixed(0)}%, ripple ${(part.groups.Ripple * 100).toFixed(0)}%, ` +
+    `At ${paramLabel} = ${fmtNum(pPart[paramId])} (just past the bifurcation), the dominant slow mode is ` +
+    `λ = ${part.lambda.re.toFixed(1)}${Math.abs(part.lambda.im) > 1 ? ` ± ${Math.abs(part.lambda.im).toFixed(1)}j (${fHz.toFixed(0)} Hz)` : ' (real)'}. ` +
+    `Driver: DC ${(part.groups.DC * 100).toFixed(0)}%, ripple ${(part.groups.Ripple * 100).toFixed(0)}%, ` +
     `controller ${(part.groups.Controller * 100).toFixed(0)}%.`));
   root.appendChild(participationCard(part));
-  root.appendChild(participation3DCard(part.allFactors, part.allEigenvalues, part.labels));
 
-  root.appendChild(h('Step 4 — 2D stability map'));
+  // ============================================================
+  // TIER 3 — HARDWARE SENSITIVITY (collapsed by default)
+  // How does the stability boundary move if L or C changes?
+  // ============================================================
+  const hwDetails = document.createElement('details');
+  hwDetails.className = 'stab-section';
+  const hwSummary = document.createElement('summary');
+  hwSummary.innerHTML = '<strong>Hardware sensitivity — effect of L and C</strong> <span class="hint">(click to run; bisects on many points so takes 5-30 s)</span>';
+  hwDetails.appendChild(hwSummary);
+  const hwBody = document.createElement('div');
+  let hwLoaded = false;
+  hwDetails.addEventListener('toggle', () => {
+    if (hwDetails.open && !hwLoaded) {
+      hwLoaded = true;
+      const loading = document.createElement('p');
+      loading.className = 'hint';
+      loading.textContent = 'Running design study…';
+      hwBody.appendChild(loading);
+      setTimeout(() => {
+        try { renderDesignStudy(hwBody, topology, p, res); }
+        catch (err) { console.error(err); hwBody.textContent = 'Error: ' + err.message; }
+      }, 30);
+    }
+  });
+  hwDetails.appendChild(hwBody);
+  root.appendChild(hwDetails);
+
+  // ============================================================
+  // TIER 4 — FULL ANALYSIS DETAILS (collapsed by default)
+  // Locus, max-Re curve, bifurcation diagram, 2D map, 3D participation, eigenvalue table.
+  // Useful when you want to see the underlying math, not needed for design decisions.
+  // ============================================================
+  const detailsEl = document.createElement('details');
+  detailsEl.className = 'stab-section';
+  const detailsSummary = document.createElement('summary');
+  detailsSummary.innerHTML = '<strong>Full analysis details</strong> <span class="hint">(locus, sweep traces, 2D map, eigenvalue table)</span>';
+  detailsEl.appendChild(detailsSummary);
+
+  const dBody = document.createElement('div');
+  // Eigenvalue locus + slow zoom
+  dBody.appendChild(h('Eigenvalue locus'));
+  dBody.appendChild(stepText(
+    'Every eigenvalue at every sweep step. Crosses cluster where modes are stable; ' +
+    'the black square marks where the bifurcation actually crosses the imaginary axis.'));
+  dBody.appendChild(plotCard('Complex plane', locusChart(sw, bifVal)));
+  dBody.appendChild(plotCard('Slow region zoom', locusChart(sw, bifVal, { slow: true, fs: p.fs })));
+  dBody.appendChild(plotCard(`Max real part vs ${paramLabel}`, maxRealChart(sw, paramLabel, range.log)));
+
+  // Bifurcation diagram
+  dBody.appendChild(h('Bifurcation diagram (steady-state vo)'));
+  dBody.appendChild(stepText(
+    'Steady-state output voltage vs the swept parameter. A single line means one stable equilibrium; ' +
+    'a fanning band after the bifurcation is the Hopf limit cycle.'));
+  const bd = bifurcationDiagram(topology, p, paramId, { ...range, points: RES.bd });
+  dBody.appendChild(plotCard(`vo steady-state vs ${paramLabel}`, bifChart(bd, paramLabel, range.log)));
+
+  // 3D participation
+  dBody.appendChild(h('Per-mode participation (all 8 modes × all 8 states)'));
+  dBody.appendChild(stepText(
+    'Each row of bars is one eigenvalue (labeled by frequency). Tall bars show which ' +
+    'state variables that mode involves. Useful for confirming the dominant-mode story above.'));
+  dBody.appendChild(participation3DCard(part.allFactors, part.allEigenvalues, part.labels));
+
+  // 2D stability map
+  dBody.appendChild(h('2D stability map'));
   const secondId = paramId === 'L' ? 'Ki1' : 'L';
   const secLabel = (SWEEPABLE.find(s => s.id === secondId) || {}).label || secondId;
-  root.appendChild(stepText(
+  dBody.appendChild(stepText(
     `Stable (blue) vs unstable (red) region over ${paramLabel} and ${secLabel}. ` +
-    'The boundary is the bifurcation locus — a design map.'));
+    'The boundary is the bifurcation locus.'));
   const xSpec = { id: paramId, min: range.min, max: range.max, points: RES.mapX, log: range.log };
   const baseSecond = p[secondId];
   const ySpec = { id: secondId, min: baseSecond * 0.3, max: baseSecond * 3, points: RES.mapY, log: false };
   const map = stabilityMap2D(topology, p, xSpec, ySpec);
-  root.appendChild(plotCard(`Stability region: ${paramLabel} vs ${secLabel}`, mapChart(map, paramLabel, secLabel)));
+  dBody.appendChild(plotCard(`Stability region: ${paramLabel} vs ${secLabel}`, mapChart(map, paramLabel, secLabel)));
 
-  // ---- Eigenvalue table (paper Tables 2/3) ----
-  root.appendChild(h('Eigenvalue table'));
-  root.appendChild(stepText(
+  // Eigenvalue table
+  dBody.appendChild(h('Eigenvalue table'));
+  dBody.appendChild(stepText(
     `All 8 eigenvalues at several values of ${paramLabel} — watch which complex pair moves toward Re = 0.`));
   const tbl = eigenvalueTable(topology, p, paramId, range, 6);
-  root.appendChild(eigenTable(tbl, paramLabel));
+  dBody.appendChild(eigenTable(tbl, paramLabel, bifVal));
 
-  // ---- Heavy design study: on demand (it bisects at many points) ----
-  root.appendChild(h('Design study — effect of L and C'));
-  root.appendChild(stepText(
-    'How the critical Ki1 (stability headroom) scales with the power-stage components. ' +
-    'Key finding from the paper: Ki1_crit · L ≈ constant (L is the dominant knob), C has weak effect. ' +
-    'This study bisects for Ki1_crit at many points, so it runs on demand.'));
-  const studyBtn = document.createElement('button');
-  studyBtn.textContent = 'Run L/C design study (slower)';
-  studyBtn.className = 'secondary-btn';
-  const studyOut = document.createElement('div');
-  studyBtn.addEventListener('click', () => {
-    studyBtn.disabled = true; studyBtn.textContent = 'Running design study…';
-    setTimeout(() => {
-      try { renderDesignStudy(studyOut, topology, p, res); }
-      catch (err) { console.error(err); studyOut.textContent = 'Error: ' + err.message; }
-      studyBtn.textContent = 'Re-run L/C design study'; studyBtn.disabled = false;
-    }, 30);
-  });
-  root.append(studyBtn, studyOut);
+  detailsEl.appendChild(dBody);
+  root.appendChild(detailsEl);
 }
 
 function renderDesignStudy(root, topology, p, res = 'med') {
@@ -690,20 +712,6 @@ function mapChart(map, xLabel, yLabel) {
     xLabel, yLabel,
   });
 }
-function bodeMagChart(fr) {
-  return createChart({
-    series: [{ x: fr.w, y: fr.magDb, color: '#2b6cb0', width: 1.6, label: '|Vo/Vref| (dB)' }],
-    xLabel: 'Frequency (rad/s)', yLabel: 'Magnitude (dB)', xLog: true,
-    xFmt: v => '10^' + Math.round(Math.log10(v)),
-  });
-}
-function bodePhaseChart(fr) {
-  return createChart({
-    series: [{ x: fr.w, y: fr.phaseDeg, color: '#8b7ff0', width: 1.6, label: 'phase (°)' }],
-    xLabel: 'Frequency (rad/s)', yLabel: 'Phase (degrees)', xLog: true,
-    xFmt: v => '10^' + Math.round(Math.log10(v)),
-  });
-}
 
 function critScaleChart(study, xLabel) {
   const xs = [], ys = [];
@@ -721,7 +729,7 @@ function critProductChart(study, xLabel) {
     xLabel, yLabel: 'Ki1_crit × L',
   });
 }
-function eigenTable(tbl, paramLabel) {
+function eigenTable(tbl, paramLabel, critValue = null) {
   const card = document.createElement('div'); card.className = 'plot-card';
   const t = document.createElement('h3'); t.textContent = 'Eigenvalues vs ' + paramLabel;
   const table = document.createElement('table'); table.className = 'eig-table';
@@ -730,7 +738,25 @@ function eigenTable(tbl, paramLabel) {
   head.appendChild(thCell('max Re(λ)'));
   head.appendChild(thCell('dominant pair (Hz)'));
   table.appendChild(head);
+
+  // Find where the bifurcation row should be inserted (just before the first
+  // sample whose value exceeds critValue).
+  const insertIdx = critValue != null
+    ? tbl.values.findIndex(v => v >= critValue)
+    : -1;
+
   tbl.values.forEach((v, i) => {
+    // Inject the bifurcation boundary marker right before the first
+    // sample past the critical value.
+    if (i === insertIdx && critValue != null && insertIdx > 0) {
+      const tr = document.createElement('tr');
+      tr.className = 'eig-boundary-row';
+      const td = document.createElement('td');
+      td.colSpan = 3;
+      td.textContent = `── bifurcation at ${paramLabel} = ${fmtNum(critValue)} ──`;
+      tr.appendChild(td);
+      table.appendChild(tr);
+    }
     const eigs = tbl.rows[i];
     const tr = document.createElement('tr');
     tr.appendChild(tdCell(fmtNum(v)));

@@ -5,7 +5,6 @@
  */
 
 import { eigenvalues } from '../core/analysis.js';
-import { renderPlots } from './plots.js';
 import { exportAs, fileNameFor } from '../utils/export.js';
 import { renderComparison } from './comparison.js';
 
@@ -77,20 +76,6 @@ export function renderResults(container, result, meta = {}) {
     const warn = document.createElement('p');
     warn.className = 'hint';
     warn.textContent = `Eigenvalues unavailable: ${err.message}`;
-    container.appendChild(warn);
-  }
-
-  // --- Plots ---
-  container.appendChild(sectionTitle('Plots'));
-  try {
-    const plotsWrap = document.createElement('div');
-    plotsWrap.className = 'plots-wrap';
-    renderPlots(plotsWrap, result);
-    container.appendChild(plotsWrap);
-  } catch (err) {
-    const warn = document.createElement('p');
-    warn.className = 'hint';
-    warn.textContent = `Plots unavailable: ${err.message}`;
     container.appendChild(warn);
   }
 
